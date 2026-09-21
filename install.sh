@@ -14,12 +14,10 @@ Usage: sh install.sh [options]
   --version VERSION    Release tag, e.g. v0.1.0 (default: this release or latest)
   --bin-dir DIRECTORY  Install directory (default: $HOME/.local/bin)
   --from-dir DIRECTORY Use already downloaded archives and checksums
-  --with-browser       Also install the pinned Playwright driver and Chromium
   --help               Show this help
 
-Private releases require an authenticated GitHub CLI (gh auth login).
-Public releases can also be downloaded using curl. Browser setup requires
-Node.js and npm; the CLI and offline queries work without them.
+Downloads require GitHub CLI (gh auth login). For browser commands,
+run the separate setup-browser.sh script after installing Node.js and npm.
 EOF
 }
 
@@ -32,7 +30,6 @@ main() {
   version=${SESSH_VERSION:-$DEFAULT_VERSION}
   bin_dir=${SESSH_INSTALL_DIR:-${HOME:?HOME must be set}/.local/bin}
   from_dir=
-  with_browser=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --version|--bin-dir|--from-dir)
@@ -43,7 +40,6 @@ main() {
           --from-dir) from_dir=$2 ;;
         esac
         shift 2 ;;
-      --with-browser) with_browser=true; shift ;;
       --help|-h) usage; return ;;
       *) fail "Unknown option: $1 (use --help)" ;;
     esac
@@ -69,29 +65,11 @@ main() {
   else
     fail 'Install sha256sum or shasum to verify downloads.'
   fi
-  if [ "$with_browser" = true ]; then
-    command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1 ||
-      fail 'Browser setup requires Node.js and npm. Omit --with-browser to install only the CLI.'
-  fi
-
-  transport=local
   if [ -z "$from_dir" ]; then
-    if command -v gh >/dev/null 2>&1 && gh auth status --hostname github.com >/dev/null 2>&1; then
-      transport=gh
-    else
-      command -v curl >/dev/null 2>&1 || fail 'Install GitHub CLI (gh) or curl to download a release.'
-      transport=curl
+    command -v gh >/dev/null 2>&1 || fail 'Install GitHub CLI and run gh auth login first.'
+    if [ "$version" = latest ]; then
+      version=$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName)
     fi
-  fi
-  if [ "$version" = latest ]; then
-    case "$transport" in
-      gh) version=$(gh release view --repo "$REPOSITORY" --json tagName --jq .tagName) || fail 'Cannot find the latest release.' ;;
-      curl)
-        latest_url=$(curl --fail --silent --show-error --location --proto '=https' --output /dev/null --write-out '%{url_effective}' "https://github.com/$REPOSITORY/releases/latest") ||
-          fail 'Cannot find a public release. For a private repository, run gh auth login first.'
-        version=${latest_url##*/} ;;
-      local) fail '--from-dir requires --version (or a release-specific install.sh).' ;;
-    esac
   fi
   case "$version" in *[!0-9A-Za-z.-]*) fail 'Invalid release version.' ;; esac
   printf '%s\n' "$version" | grep -Eq '^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || fail 'Invalid release version.'
@@ -105,18 +83,11 @@ main() {
   trap cleanup EXIT
   trap 'exit 1' HUP INT TERM
 
-  case "$transport" in
-    local)
-      cp "$from_dir/$archive" "$from_dir/$manifest" "$work/" || fail 'Archive or checksum file is missing.' ;;
-    gh)
-      gh release download "$tag" --repo "$REPOSITORY" --pattern "$archive" --pattern "$manifest" --dir "$work" ||
-        fail 'Download failed. Check the release tag and your repository access.' ;;
-    curl)
-      for asset in "$archive" "$manifest"; do
-        curl --fail --silent --show-error --location --proto '=https' "https://github.com/$REPOSITORY/releases/download/$tag/$asset" --output "$work/$asset" ||
-          fail 'Download failed. Private releases require gh auth login and repository access.'
-      done ;;
-  esac
+  if [ -n "$from_dir" ]; then
+    cp "$from_dir/$archive" "$from_dir/$manifest" "$work/"
+  else
+    gh release download "$tag" --repo "$REPOSITORY" --pattern "$archive" --pattern "$manifest" --dir "$work"
+  fi
   expected=$(awk -v asset="$archive" '$2 == asset { print $1 }' "$work/$manifest")
   [ "${#expected}" -eq 64 ] || fail 'Checksum entry is missing or ambiguous.'
   case "$expected" in *[!0-9a-fA-F]*) fail 'Invalid checksum entry.' ;; esac
@@ -130,10 +101,6 @@ main() {
   # Extract only named files to stdout, never archive paths onto the filesystem.
   tar -xzOf "$work/$archive" "$prefix/sessh" > "$work/sessh" || fail 'Release archive has no sessh binary.'
   [ -s "$work/sessh" ] || fail 'Release binary is empty.'
-  if [ "$with_browser" = true ]; then
-    tar -xzOf "$work/$archive" "$prefix/setup-browser.sh" > "$work/setup-browser.sh" || fail 'Release archive has no browser setup script.'
-    sh "$work/setup-browser.sh"
-  fi
   [ ! -d "$bin_dir/sessh" ] || fail 'The destination sessh is a directory.'
   mkdir -p "$bin_dir"
   staged_binary=$(mktemp "$bin_dir/.sessh-install.XXXXXX")
@@ -146,9 +113,6 @@ main() {
     *":$bin_dir:"*) ;;
     *) printf 'Add %s to your PATH, then run sessh --help.\n' "$bin_dir" ;;
   esac
-  if [ "$with_browser" = false ]; then
-    printf 'For browser commands, rerun with --with-browser after installing Node.js and npm.\n'
-  fi
 }
 
 main "$@"

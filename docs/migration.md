@@ -1,69 +1,17 @@
-# Migrating to sessh
+# Migrating from zai
 
-The project previously used the names `zai-cli` and `zai`. The command is now
-`sessh` (session shell), and the Go module is `github.com/stefanm8/sessh`.
+The command is now `sessh`. Replace `ZAI_HOME` / `ZAI_PROFILE` with
+`SESSH_HOME` / `SESSH_PROFILE`; old variables are no longer read.
 
-| Previous | Current |
-| --- | --- |
-| `zai ...` | `sessh ...` |
-| `cmd/zai` | `cmd/sessh` |
-| `ZAI_HOME` | `SESSH_HOME` |
-| `ZAI_PROFILE` | `SESSH_PROFILE` |
-| `~/.zai` | `~/.sessh` |
-| `zai.json` profile metadata | `sessh.json` |
-| `.zai-lock` | `.sessh-lock` |
+1. Stop old commands, daemons, and captures; privately back up `~/.zai`.
+2. Move `~/.zai` to `~/.sessh` only if the destination does not exist.
+   For custom storage, set `SESSH_HOME` to its location.
+3. Rename each profile's `zai.json` to `sessh.json`; the format is unchanged.
+4. Set your Bitbucket workspace and Jira/Confluence sites in `config.yaml` or
+   environment variables. Company-specific defaults have been removed.
+5. Check imported permissions, then run `sessh auth list` and a service command.
 
-Old environment variables are not read, and state is not migrated
-automatically. Plugin-specific variables such as `JIRA_SITE`, `TEAMS_DATA_DIR`,
-and `TEAMS_MESSAGES_FILE` are unchanged. Teams data now follows `SESSH_HOME`
-unless one of its more specific overrides is set.
-
-## Keep existing profiles and captures
-
-Stop all old CLI processes, daemons, and captures before migrating. Back up
-your state directory privately. Do not run both versions against the same
-profile: their lock filenames differ.
-
-For the default state directory, first verify that `~/.sessh` does not already
-exist, then move the old root:
-
-```sh
-test ! -e "$HOME/.sessh" && mv "$HOME/.zai" "$HOME/.sessh"
-```
-
-If a destination already exists, stop here and reconcile the directories
-manually; do not overwrite profiles. For a custom `ZAI_HOME`, use that source
-directory instead and set `SESSH_HOME` to the chosen destination.
-
-Within each migrated profile, rename `zai.json` to `sessh.json`. The JSON
-format is unchanged. Old lock files can remain inert; sessh creates its own.
-Stale sockets are recovered when the next session starts.
-
-Set your Bitbucket workspace and Jira/Confluence sites in `config.yaml` or the
-corresponding environment variables. Earlier builds supplied company-specific
-defaults; these have been removed. Review file permissions on the migrated
-state, then run:
-
-```sh
-sessh auth list
-sessh auth status jira      # choose a configured service
-sessh teams messages -n 5  # if you have a Teams capture
-```
-
-Replace shell aliases and scripts that invoke `zai`. Keep the old executable
-until you have verified the new setup, then remove it from your `PATH`.
-
-## Import another Chromium profile
-
-To copy only cookies and localStorage into a new profile:
-
-```sh
-sessh auth import /path/to/chromium-user-data --into atlassian
-sessh auth status bitbucket
-```
-
-Close the source browser first. Import uses Chromium to read the profile, so
-back it up beforehand; opening a profile can update Chromium metadata.
-The importer does not copy IndexedDB or message captures. Existing Teams
-JSONL files can be read with `--source /path/to/messages.jsonl` or selected for
-capture with `TEAMS_DATA_DIR=/path/to/data`.
+Do not run old and new versions against the same profile: their lock names
+differ. Existing destination directories must be reconciled manually.
+Plugin-specific environment variables are unchanged; Teams storage now follows
+`SESSH_HOME` unless overridden by `TEAMS_DATA_DIR` or `TEAMS_MESSAGES_FILE`.

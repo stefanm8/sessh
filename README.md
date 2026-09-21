@@ -1,10 +1,8 @@
 # sessh — session shell
 
-One login, many tools. **sessh** is a Go CLI for Bitbucket, Jira, Confluence,
-and Microsoft Teams, using persistent Chromium sessions to authenticate.
-Log in through your browser with SSO and MFA, then use the saved session from
-your terminal. Commands sharing a profile reuse its browser through a local
-socket, including while a long-running Teams capture is active.
+A Go CLI for Bitbucket, Jira, Confluence, and Microsoft Teams. Log in through
+Chromium with SSO/MFA, then reuse that session from your terminal. Commands
+sharing a profile reuse its browser, including during Teams capture.
 
 ```sh
 sessh bitbucket pr list my-repo
@@ -13,161 +11,76 @@ sessh confluence page view 123456
 sessh teams messages --since 24h
 ```
 
-- **Bitbucket Cloud:** repositories, pull requests, and CI checks.
-- **Jira Cloud:** projects, issues, and JQL queries.
-- **Confluence Cloud:** spaces, page trees, search, and Markdown output.
-- **Microsoft Teams:** capture messages locally, then search and export them offline.
+Early-stage, unofficial project for macOS and Linux (amd64/arm64).
+The repository and releases remain private during validation.
 
-This is an early-stage, unofficial project. Browser integrations can change
-when the upstream services change. macOS and Linux are supported; native
-Windows is not supported because profile locking uses Unix `flock` and sockets.
+## Install
 
-The repository and its GitHub releases remain private while service validation
-is in progress. See [the release guide](docs/releasing.md) before making the
-repository public.
-
-## Install a release
-
-Prebuilt binaries are available for macOS and Linux on Intel/AMD (amd64) and
-Apple Silicon/ARM (arm64). **Go is not required.** While the repository is
-private, authenticate [GitHub CLI](https://cli.github.com/) with an account
-that has access, then install:
+With [GitHub CLI](https://cli.github.com/) authenticated to an account with
+repository access:
 
 ```sh
 gh auth login
 gh release download v0.1.0 -R stefanm8/sessh -p install.sh -O - | sh
 ```
 
-This installs `sessh` to `~/.local/bin`. Add that directory to your `PATH` if
-needed. To install the pinned browser driver and Chromium too (requires
-Node.js and npm):
+The installer verifies SHA-256 checksums and installs `~/.local/bin/sessh`.
+Add `~/.local/bin` to your `PATH`. Use `--bin-dir /your/bin` to change the
+location, or `--version v0.1.0` to select a release. You can also download
+archives from [Releases](https://github.com/stefanm8/sessh/releases).
+
+Browser commands require Node.js, npm, and Chromium. Set up the pinned driver:
 
 ```sh
-gh release download v0.1.0 -R stefanm8/sessh -p install.sh -O - | sh -s -- --with-browser
+gh release download v0.1.0 -R stefanm8/sessh -p setup-browser.sh -O - | sh
 ```
 
-The installer verifies the archive's SHA-256 checksum and replaces only the
-executable. It does not change your shell configuration, browser profiles, or
-captures. Use `--bin-dir /your/bin` for another location and `--version v0.1.0`
-to select a release. See [all installation options](docs/install.md), including
-manual downloads, updates, and uninstalling.
+Setup installs in your user cache; Linux may need the system libraries listed
+by the script. Interactive login needs a graphical session. Help and offline
+Teams queries work without a browser.
 
-## Install from source
+## Configure and use
 
-Requires Go **1.25.4 or later**. From a checkout of this repository:
+Copy [config.example.yaml](config.example.yaml) to `~/.sessh/config.yaml` and
+set your services. Alternatively, set `BITBUCKET_WORKSPACE`, `JIRA_SITE`, and
+`CONFLUENCE_SITE`; environment variables override the file.
 
 ```sh
-go build -o sessh ./cmd/sessh
-./sessh --help
-go install ./cmd/sessh
-```
-
-`go install` places the executable in `GOBIN`, or `$(go env GOPATH)/bin` when
-`GOBIN` is unset. Add that directory to your `PATH`.
-
-### Browser setup
-
-Browser commands also need Node.js, npm, and the Playwright Chromium browser.
-From a source checkout, set up the exact version used by the Go bindings:
-
-```sh
-sh scripts/setup-browser.sh
-```
-
-The setup script installs Playwright 1.61.1 in your user cache without sudo or
-global npm packages. On Linux it prints a separate command for any missing
-system libraries; that command may require administrator access. A graphical
-session is required for the interactive `auth login` command.
-
-sessh first uses an existing driver in the Playwright Go cache. Otherwise it
-finds an exact-version `playwright-core` package near the executable, in
-`node_modules` in the working directory or its ancestors, or in `npm root -g`.
-It links that package and the Node executable into the cache. It does not
-install packages or browsers when a command runs.
-
-Set `PLAYWRIGHT_DRIVER_PATH` to use a custom driver directory containing
-`package/cli.js` and a `node` executable. Offline Teams queries, help, and
-`auth list` need neither Node nor Chromium.
-
-## Configure and log in
-
-Create `~/.sessh/config.yaml` using [config.example.yaml](config.example.yaml).
-Set only the services you plan to use, with your own site and workspace:
-
-```yaml
-plugins:
-  bitbucket:
-    workspace: your-workspace
-  jira:
-    site: https://your-tenant.atlassian.net
-  confluence:
-    site: https://your-tenant.atlassian.net
-```
-
-You can instead set `BITBUCKET_WORKSPACE`, `JIRA_SITE`, and `CONFLUENCE_SITE`.
-There are no built-in company accounts or tenant defaults. Site values must
-be HTTP(S) origins, without `/wiki`, credentials, query strings, or fragments.
-Environment variables override the configuration file.
-
-```sh
-sessh auth login bitbucket     # interactive browser login
+sessh auth login bitbucket
 sessh bitbucket repo list
-sessh auth status bitbucket
-
 sessh auth login teams
-sessh teams capture            # Ctrl+C to stop
+sessh teams capture             # Ctrl+C to stop
 sessh teams messages -n 20
 ```
 
-Bitbucket, Jira, and Confluence share the `atlassian` profile by default.
-Teams uses `microsoft`. Shared Atlassian cookies allow silent SSO where your
-organization permits it; individual services can still require another login.
-Use `--profile work` or `SESSH_PROFILE=work` to select another profile.
-New profiles inherit cookies and localStorage from `default` when it exists;
-use `--no-inherit` to create an isolated identity.
+Atlassian services share the `atlassian` profile; Teams uses `microsoft`.
+Use `--profile work` for another profile and `--no-inherit` to avoid inheriting
+cookies from `default`. `SESSH_HOME` changes the state root (`~/.sessh`);
+`TEAMS_DATA_DIR` overrides capture storage. Profiles contain credentials and
+captures contain private messages: keep both out of Git and bug reports.
 
-## Local data
+See the [command reference](docs/cli.md), `sessh <command> --help`,
+[migration notes](docs/migration.md), and [security policy](SECURITY.md).
 
-`SESSH_HOME` changes the entire state root (default `~/.sessh`):
+## Develop and release
 
-```text
-~/.sessh/
-├── config.yaml
-├── profiles/           Chromium profiles and sessh.json metadata
-├── run/                local session sockets
-└── teams/              messages.jsonl and conversations.jsonl
-```
-
-`TEAMS_DATA_DIR` overrides the Teams data directory. Teams queries read local
-files without starting a browser; use `--source` to select an export.
-
-Browser profiles contain authentication credentials, and captures can contain
-private messages. Keep these files out of source control and public bug reports.
-New profile directories, sockets, and capture files have owner-only permissions.
-Existing files retain their permissions. See [SECURITY.md](SECURITY.md) for
-reporting vulnerabilities and the local trust model.
-
-## Documentation
-
-- [Command reference](docs/cli.md): flags, configuration, formats, and scripting.
-- [Migration guide](docs/migration.md): previous names and existing browser profiles.
-- [Contributing](CONTRIBUTING.md): development workflow and plugin architecture.
-- [Release preparation](docs/releasing.md): repository setup and release checks.
-
-## Development
+Requires Go 1.25.4 or later:
 
 ```sh
-make check       # formatting, module consistency, vet, and race-enabled tests
-make build       # bin/sessh
+make build                     # bin/sessh
+make install                   # Go's bin directory
+sh scripts/setup-browser.sh    # optional browser setup from source
+make check                     # formatting, modules, vet, race tests
+make dist VERSION=0.1.1         # four platform archives + checksums in dist/
 ```
 
-Tests use temporary files and synthetic fixtures; they do not require accounts
-or a browser. Live service behavior requires separate manual verification.
-GitHub Actions runs the same checks and installs release archives on macOS
-and Linux. Pushing a version tag runs those checks before publishing the
-GitHub release and its assets.
+CI runs checks and tests native installation on macOS and Linux. Push a
+`vX.Y.Z` tag on a commit from `main` to publish a GitHub release with generated
+notes and all assets; suffixed tags become prereleases. Live service login
+still needs manual validation. Publishing a release keeps the repository private.
 
-## License
+Contributions: run `make check`, describe the change and validation, and use
+synthetic fixtures. Keep the Playwright Go binding, `session.DriverVersion`,
+and `scripts/setup-browser.sh` version in sync when updating dependencies.
 
-[MIT](LICENSE). Dependencies retain their own licenses; see
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+[MIT](LICENSE). Dependency licenses: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
