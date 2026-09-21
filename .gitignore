@@ -34,7 +34,3 @@ node_modules/
 .vscode/
 *.swp
 *.swo
-
-# Project documentation belongs in source control, even with a global docs ignore.
-!/docs/
-!/docs/**

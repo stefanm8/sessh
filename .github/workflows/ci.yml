@@ -36,14 +36,15 @@ jobs:
         shell: bash
         run: |
           TARGETS="$(go env GOOS)/$(go env GOARCH)" make dist VERSION=0.0.0-ci
-          sh dist/install.sh --from-dir dist --bin-dir "$RUNNER_TEMP/sessh-install"
+          export SESSH_RELEASE_DIR=dist SESSH_INSTALL_DIR="$RUNNER_TEMP/sessh-install"
+          sh dist/install.sh
           "$RUNNER_TEMP/sessh-install/sessh" --version | grep -F 'sessh version 0.0.0-ci'
           export SESSH_HOME="$RUNNER_TEMP/sessh-state"
           "$RUNNER_TEMP/sessh-install/sessh" --help
           "$RUNNER_TEMP/sessh-install/sessh" auth list
           "$RUNNER_TEMP/sessh-install/sessh" teams schema -f json
           printf 'corrupt' >> dist/sessh_*.tar.gz
-          if sh dist/install.sh --from-dir dist --bin-dir "$RUNNER_TEMP/sessh-install"; then
+          if sh dist/install.sh; then
             echo 'Installer accepted a corrupt archive' >&2
             exit 1
           fi
