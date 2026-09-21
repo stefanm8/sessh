@@ -22,8 +22,35 @@ This is an early-stage, unofficial project. Browser integrations can change
 when the upstream services change. macOS and Linux are supported; native
 Windows is not supported because profile locking uses Unix `flock` and sockets.
 
-The repository remains private while validation is in progress. A public
-release requires completing the checks in [the release guide](docs/releasing.md).
+The repository and its GitHub releases remain private while service validation
+is in progress. See [the release guide](docs/releasing.md) before making the
+repository public.
+
+## Install a release
+
+Prebuilt binaries are available for macOS and Linux on Intel/AMD (amd64) and
+Apple Silicon/ARM (arm64). **Go is not required.** While the repository is
+private, authenticate [GitHub CLI](https://cli.github.com/) with an account
+that has access, then install:
+
+```sh
+gh auth login
+gh release download v0.1.0 -R stefanm8/sessh -p install.sh -O - | sh
+```
+
+This installs `sessh` to `~/.local/bin`. Add that directory to your `PATH` if
+needed. To install the pinned browser driver and Chromium too (requires
+Node.js and npm):
+
+```sh
+gh release download v0.1.0 -R stefanm8/sessh -p install.sh -O - | sh -s -- --with-browser
+```
+
+The installer verifies the archive's SHA-256 checksum and replaces only the
+executable. It does not change your shell configuration, browser profiles, or
+captures. Use `--bin-dir /your/bin` for another location and `--version v0.1.0`
+to select a release. See [all installation options](docs/install.md), including
+manual downloads, updates, and uninstalling.
 
 ## Install from source
 
@@ -41,15 +68,15 @@ go install ./cmd/sessh
 ### Browser setup
 
 Browser commands also need Node.js, npm, and the Playwright Chromium browser.
-Install the exact driver version used by the Go bindings:
+From a source checkout, set up the exact version used by the Go bindings:
 
 ```sh
-npm install --global playwright-core@1.61.1
-playwright-core install chromium
+sh scripts/setup-browser.sh
 ```
 
-On Linux, `playwright-core install --with-deps chromium` can also install the
-required system packages (it may request administrator access). A graphical
+The setup script installs Playwright 1.61.1 in your user cache without sudo or
+global npm packages. On Linux it prints a separate command for any missing
+system libraries; that command may require administrator access. A graphical
 session is required for the interactive `auth login` command.
 
 sessh first uses an existing driver in the Playwright Go cache. Otherwise it
@@ -136,7 +163,9 @@ make build       # bin/sessh
 
 Tests use temporary files and synthetic fixtures; they do not require accounts
 or a browser. Live service behavior requires separate manual verification.
-GitHub Actions runs the same checks on macOS and Linux.
+GitHub Actions runs the same checks and installs release archives on macOS
+and Linux. Pushing a version tag runs those checks before publishing the
+GitHub release and its assets.
 
 ## License
 

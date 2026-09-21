@@ -21,8 +21,9 @@ validation. Pushing source or running CI does not approve a public release.
 
 The default branch is `main`; the SSH remote is
 `git@github.com:stefanm8/sessh.git`. Development pushes remain private while
-validation is in progress. Do not publish releases or upload release archives
-until the public-release review is complete.
+validation is in progress. GitHub releases and their assets inherit the
+repository's visibility. Private releases are available to collaborators for
+validation; publishing one does not change repository visibility.
 
 ## Build release files
 
@@ -34,14 +35,34 @@ make dist VERSION=0.1.0
 The distribution script requires Go, `tar`, and `shasum`. It creates archives
 for macOS and Linux on amd64 and arm64, plus SHA-256 checksums in `dist/`.
 Archives include the binary, MIT license, third-party license texts, example
-configuration, and documentation. Node and Chromium are installed separately
+configuration, documentation, and install scripts. The build also creates
+standalone `install.sh` and `setup-browser.sh` assets and includes their hashes
+in the checksum file. Node and Chromium are installed separately
 by users and are not bundled. Cross-compilation is not a runtime test on the
 target architecture.
 
 Inspect the archives and smoke-test the native binary's `--version`, `--help`,
 and offline queries. Refresh bundled dependency license notices if versions
-changed. Record user-visible changes and migration notes, then create a tag
-such as `v0.1.0` and publish its archives through the GitHub release UI.
+changed. Write release notes at `docs/releases/v<VERSION>.md`, commit and push
+to `main`, and tag the validated commit:
+
+```sh
+git tag -a v0.1.0 -m "sessh 0.1.0"
+git push origin v0.1.0
+```
+
+The Release workflow reuses the macOS and Linux CI checks, including installing
+the generated packages. Only after both pass does it build all four platform
+archives, verify checksums, and test the native installer again. It uploads all
+seven assets to a draft release before publishing it. Tags with a suffix such
+as `-rc.1` become prereleases. Tags must refer to commits on `main`; the workflow
+never changes repository visibility. Review failed runs before retrying; if an
+upload failed after draft creation, complete or remove that draft first.
+
+For private repositories, users install through authenticated GitHub CLI as
+described in [the installation guide](install.md). Anonymous curl installs and
+public Go module installation become available only after the repository is
+public.
 
 After publication, installation can use:
 
