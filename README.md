@@ -40,6 +40,17 @@ Use `sessh <command> --help` for options. `--profile` selects an identity;
 keep both out of Git and bug reports. Report vulnerabilities privately through
 GitHub Security Advisories; if unavailable, ask for a private contact in an issue.
 
+## Agents
+
+Install the [sessh skill](skills/sessh/SKILL.md) for Codex (requires repository access):
+
+```sh
+npx skills add git@github.com:stefanm8/sessh.git --skill sessh -a codex -g -y
+```
+
+Replace `codex` with your agent, or omit `-a codex -y` to choose interactively.
+The skill includes CLI installation, browser setup, and session checks.
+
 ## Develop
 
 `make build` builds `bin/sessh`; `make check` runs formatting, module, vet, and

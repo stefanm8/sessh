@@ -32,6 +32,7 @@ for target in ${TARGETS:-darwin/amd64 darwin/arm64 linux/amd64 linux/arm64}; do
     go build -trimpath -ldflags "-s -w -X main.version=$version" \
     -o "$stage/$archive/sessh" ./cmd/sessh
   cp LICENSE README.md THIRD_PARTY_NOTICES.md config.example.yaml "$stage/$archive/"
+  cp -R skills "$stage/$archive/"
   tar -czf "dist/$archive.tar.gz" -C "$stage" "$archive"
   (cd dist && shasum -a 256 "$archive.tar.gz") >> "$manifest"
 done
