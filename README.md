@@ -45,7 +45,7 @@ GitHub Security Advisories; if unavailable, ask for a private contact in an issu
 Install the [sessh skill](skills/sessh/SKILL.md) for Codex (requires repository access):
 
 ```sh
-npx skills add git@github.com:stefanm8/sessh.git --skill sessh -a codex -g -y
+npx --yes skills add git@github.com:stefanm8/sessh.git --skill sessh -a codex -g -y
 ```
 
 Replace `codex` with your agent, or omit `-a codex -y` to choose interactively.
