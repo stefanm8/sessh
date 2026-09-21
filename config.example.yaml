@@ -1,0 +1,12 @@
+# Copy to ~/.sessh/config.yaml (or $SESSH_HOME/config.yaml).
+# Replace these examples with your own values; omit services you do not use.
+plugins:
+  bitbucket:
+    workspace: your-workspace
+  jira:
+    site: https://your-tenant.atlassian.net
+  confluence:
+    site: https://your-tenant.atlassian.net
+  teams:
+    url: https://teams.microsoft.com/v2/
+    profile: microsoft

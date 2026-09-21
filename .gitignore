@@ -1,0 +1,40 @@
+# Build and test outputs
+/sessh
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# Local credentials, browser profiles, and captured messages
+.env
+.env.*
+!.env.example
+.sessh/
+.seesh/
+.zai/
+/config.yaml
+userData/
+profiles/
+data/
+*.jsonl
+*.jsonl.*
+*.sock
+*.pid
+*.log
+seed.json
+storage-state*.json
+*.pem
+*.key
+
+# Local tooling
+node_modules/
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project documentation belongs in source control, even with a global docs ignore.
+!/docs/
+!/docs/**
