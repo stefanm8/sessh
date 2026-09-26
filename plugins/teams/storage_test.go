@@ -45,3 +45,24 @@ func TestCapturePaths(t *testing.T) {
 		t.Fatal("TEAMS_DATA_DIR must override SESSH_HOME")
 	}
 }
+
+func TestCaptureWriterExcludesDuplicates(t *testing.T) {
+	dir := t.TempDir()
+	cfg := captureConfig{messagesPath: filepath.Join(dir, "messages.jsonl"), convPath: filepath.Join(dir, "conversations.jsonl")}
+	first, err := openCaptureWriter(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := openCaptureWriter(cfg)
+	if err == nil {
+		second.Close()
+		t.Fatal("two captures can write the same store")
+	}
+	first.Close()
+	second, err = openCaptureWriter(cfg)
+	if err != nil {
+		t.Fatal("lock not released:", err)
+	}
+	second.Close()
+}

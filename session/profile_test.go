@@ -101,9 +101,9 @@ func TestWriteMetaRoundTrip(t *testing.T) {
 		Name:         "atlassian",
 		Parent:       DefaultProfile,
 		Created:      created,
-		Origins:      []string{"https://acme.atlassian.net", "https://bitbucket.org"},
+		Origins:      []string{"https://tenant.example", "https://bitbucket.org"},
 		LastVerified: verified,
-		LastIdentity: "Ana Example",
+		LastIdentity: "Example User",
 	}
 
 	t.Run("WriteMeta creates the profile directory", func(t *testing.T) {
@@ -169,7 +169,7 @@ func TestWriteMetaRoundTrip(t *testing.T) {
 func TestTouchVerified(t *testing.T) {
 	t.Run("the first touch stamps Created and records the origin", func(t *testing.T) {
 		isolatedHome(t)
-		TouchVerified("work", "https://acme.atlassian.net", Identity{DisplayName: "Ana"})
+		TouchVerified("work", "https://tenant.example", Identity{DisplayName: "Example User"})
 		m, err := ReadMeta("work")
 		if err != nil {
 			t.Fatal(err)
@@ -180,18 +180,18 @@ func TestTouchVerified(t *testing.T) {
 		if m.LastVerified.IsZero() {
 			t.Error("LastVerified is zero after a verification")
 		}
-		if len(m.Origins) != 1 || m.Origins[0] != "https://acme.atlassian.net" {
+		if len(m.Origins) != 1 || m.Origins[0] != "https://tenant.example" {
 			t.Errorf("Origins = %v, want one entry", m.Origins)
 		}
-		if m.LastIdentity != "Ana" {
-			t.Errorf("LastIdentity = %q, want %q", m.LastIdentity, "Ana")
+		if m.LastIdentity != "Example User" {
+			t.Errorf("LastIdentity = %q, want %q", m.LastIdentity, "Example User")
 		}
 	})
 
 	t.Run("the same origin is not recorded twice", func(t *testing.T) {
 		isolatedHome(t)
-		TouchVerified("work", "https://acme.atlassian.net", Identity{})
-		TouchVerified("work", "https://acme.atlassian.net", Identity{})
+		TouchVerified("work", "https://tenant.example", Identity{})
+		TouchVerified("work", "https://tenant.example", Identity{})
 		m, _ := ReadMeta("work")
 		if len(m.Origins) != 1 {
 			t.Errorf("Origins = %v, want exactly one entry", m.Origins)
@@ -200,7 +200,7 @@ func TestTouchVerified(t *testing.T) {
 
 	t.Run("a second origin is appended, since profiles are shared", func(t *testing.T) {
 		isolatedHome(t)
-		TouchVerified("atlassian", "https://acme.atlassian.net", Identity{})
+		TouchVerified("atlassian", "https://tenant.example", Identity{})
 		TouchVerified("atlassian", "https://bitbucket.org", Identity{})
 		m, _ := ReadMeta("atlassian")
 		if len(m.Origins) != 2 {
@@ -219,20 +219,20 @@ func TestTouchVerified(t *testing.T) {
 
 	t.Run("an anonymous verification does not erase a known identity", func(t *testing.T) {
 		isolatedHome(t)
-		TouchVerified("work", "https://acme.atlassian.net", Identity{DisplayName: "Ana"})
-		TouchVerified("work", "https://acme.atlassian.net", Identity{})
+		TouchVerified("work", "https://tenant.example", Identity{DisplayName: "Example User"})
+		TouchVerified("work", "https://tenant.example", Identity{})
 		m, _ := ReadMeta("work")
-		if m.LastIdentity != "Ana" {
-			t.Errorf("LastIdentity = %q, want the earlier %q to survive", m.LastIdentity, "Ana")
+		if m.LastIdentity != "Example User" {
+			t.Errorf("LastIdentity = %q, want the earlier %q to survive", m.LastIdentity, "Example User")
 		}
 	})
 
 	t.Run("Created is stamped once and never moved", func(t *testing.T) {
 		isolatedHome(t)
-		TouchVerified("work", "https://acme.atlassian.net", Identity{})
+		TouchVerified("work", "https://tenant.example", Identity{})
 		first, _ := ReadMeta("work")
 		time.Sleep(2 * time.Millisecond)
-		TouchVerified("work", "https://acme.atlassian.net", Identity{})
+		TouchVerified("work", "https://tenant.example", Identity{})
 		second, _ := ReadMeta("work")
 		if !second.Created.Equal(first.Created) {
 			t.Errorf("Created moved from %s to %s", first.Created, second.Created)

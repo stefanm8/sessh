@@ -100,15 +100,15 @@ func TestLoad(t *testing.T) {
 	})
 	t.Run("a full config round-trips", func(t *testing.T) {
 		isolatedHome(t)
-		writeConfig(t, "profile: global\nplugins:\n  jira:\n    profile: work\n    site: https://acme.atlassian.net\n  bitbucket:\n    workspace: acme\n")
+		writeConfig(t, "profile: global\nplugins:\n  jira:\n    profile: work\n    site: https://tenant.example\n  bitbucket:\n    workspace: example-workspace\n")
 		c := Load()
 		if c.Profile != "global" {
 			t.Errorf("Profile = %q, want %q", c.Profile, "global")
 		}
-		if got := c.Plugins["jira"]["site"]; got != "https://acme.atlassian.net" {
+		if got := c.Plugins["jira"]["site"]; got != "https://tenant.example" {
 			t.Errorf("plugins.jira.site = %q", got)
 		}
-		if got := c.Plugins["bitbucket"]["workspace"]; got != "acme" {
+		if got := c.Plugins["bitbucket"]["workspace"]; got != "example-workspace" {
 			t.Errorf("plugins.bitbucket.workspace = %q", got)
 		}
 	})
@@ -157,8 +157,8 @@ func TestSetting(t *testing.T) {
 			name:   "an unknown key falls through to the default",
 			config: "plugins:\n  jira:\n    site: https://config.example\n",
 			plugin: "jira", key: "workspace",
-			fallback: "acme",
-			want:     "acme",
+			fallback: "example-workspace",
+			want:     "example-workspace",
 		},
 		{
 			name:   "an empty config value is not a value",

@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-const site = "https://acme.atlassian.net"
+const site = "https://tenant.example"
 
 func TestParseRef(t *testing.T) {
 	tests := []struct {
@@ -15,7 +15,7 @@ func TestParseRef(t *testing.T) {
 		// --- URLs you can copy out of the browser ---------------------------
 		{
 			name: "a full page URL yields the id and the space",
-			in:   site + "/wiki/spaces/ENG/pages/123456/WIP+RFC+0010+Release+Management+SDLC",
+			in:   site + "/wiki/spaces/ENG/pages/123456/Example+Project+Guide",
 			want: &Ref{Kind: RefID, ID: "123456", Space: "ENG"},
 		},
 		{
@@ -40,12 +40,12 @@ func TestParseRef(t *testing.T) {
 		},
 		{
 			name: "an http URL works the same as https",
-			in:   "http://acme.atlassian.net/wiki/spaces/ENG/pages/123",
+			in:   "http://tenant.example/wiki/spaces/ENG/pages/123",
 			want: &Ref{Kind: RefID, ID: "123", Space: "ENG"},
 		},
 		{
 			name: "the scheme is matched case-insensitively",
-			in:   "HTTPS://acme.atlassian.net/wiki/spaces/ENG/pages/123",
+			in:   "HTTPS://tenant.example/wiki/spaces/ENG/pages/123",
 			want: &Ref{Kind: RefID, ID: "123", Space: "ENG"},
 		},
 		{
@@ -60,8 +60,8 @@ func TestParseRef(t *testing.T) {
 		},
 		{
 			name: "a personal space key with a tilde is accepted",
-			in:   site + "/wiki/spaces/~5b10a2/pages/123/Notes",
-			want: &Ref{Kind: RefID, ID: "123", Space: "~5b10a2"},
+			in:   site + "/wiki/spaces/~example123/pages/123/Notes",
+			want: &Ref{Kind: RefID, ID: "123", Space: "~example123"},
 		},
 
 		// --- /wiki-prefixed and bare paths ----------------------------------
@@ -111,13 +111,13 @@ func TestParseRef(t *testing.T) {
 		// --- display URLs -----------------------------------------------------
 		{
 			name: "a display URL yields the space and the title",
-			in:   site + "/wiki/display/ENG/Release+Management",
-			want: &Ref{Kind: RefTitle, Space: "ENG", Title: "Release Management"},
+			in:   site + "/wiki/display/ENG/Example+Guide",
+			want: &Ref{Kind: RefTitle, Space: "ENG", Title: "Example Guide"},
 		},
 		{
 			name: "a percent-encoded display title is decoded",
-			in:   site + "/wiki/display/ENG/Release%20Management",
-			want: &Ref{Kind: RefTitle, Space: "ENG", Title: "Release Management"},
+			in:   site + "/wiki/display/ENG/Example%20Guide",
+			want: &Ref{Kind: RefTitle, Space: "ENG", Title: "Example Guide"},
 		},
 		{
 			name: "a display title beginning with digits stays a title",
@@ -128,13 +128,13 @@ func TestParseRef(t *testing.T) {
 		// --- tiny links -------------------------------------------------------
 		{
 			name: "a tiny link cannot be resolved offline",
-			in:   site + "/wiki/x/AoCbXQ",
-			want: &Ref{Kind: RefTiny, Path: "/wiki/x/AoCbXQ"},
+			in:   site + "/wiki/x/AQAAAA",
+			want: &Ref{Kind: RefTiny, Path: "/wiki/x/AQAAAA"},
 		},
 		{
 			name: "a tiny link path without the host",
-			in:   "/wiki/x/AoCbXQ",
-			want: &Ref{Kind: RefTiny, Path: "/wiki/x/AoCbXQ"},
+			in:   "/wiki/x/AQAAAA",
+			want: &Ref{Kind: RefTiny, Path: "/wiki/x/AQAAAA"},
 		},
 
 		// --- spaces -----------------------------------------------------------
@@ -167,25 +167,25 @@ func TestParseRef(t *testing.T) {
 		},
 		{
 			name: "SPACE:Title",
-			in:   "ENG:WIP RFC 0010",
-			want: &Ref{Kind: RefTitle, Space: "ENG", Title: "WIP RFC 0010"},
+			in:   "ENG:Example Page",
+			want: &Ref{Kind: RefTitle, Space: "ENG", Title: "Example Page"},
 		},
 		{
 			name: "SPACE: Title tolerates the space after the colon",
-			in:   "ENG: WIP RFC 0010",
-			want: &Ref{Kind: RefTitle, Space: "ENG", Title: "WIP RFC 0010"},
+			in:   "ENG: Example Page",
+			want: &Ref{Kind: RefTitle, Space: "ENG", Title: "Example Page"},
 		},
 		{
 			name: "a personal space key in SPACE:Title form",
-			in:   "~5b10a2:My Notes",
-			want: &Ref{Kind: RefTitle, Space: "~5b10a2", Title: "My Notes"},
+			in:   "~example123:My Notes",
+			want: &Ref{Kind: RefTitle, Space: "~example123", Title: "My Notes"},
 		},
 
 		// --- deliberate near-misses -------------------------------------------
 		{
 			name: "a title that merely contains a colon is free text, not SPACE:Title",
-			in:   "RFC 0010: Release Management",
-			want: &Ref{Kind: RefSearch, Text: "RFC 0010: Release Management"},
+			in:   "Project Guide: Getting Started",
+			want: &Ref{Kind: RefSearch, Text: "Project Guide: Getting Started"},
 		},
 		{
 			name: "a colon with nothing after it is free text",
@@ -206,8 +206,8 @@ func TestParseRef(t *testing.T) {
 		// --- free text and empties --------------------------------------------
 		{
 			name: "free text falls back to search",
-			in:   "release management sdlc",
-			want: &Ref{Kind: RefSearch, Text: "release management sdlc"},
+			in:   "example project guide",
+			want: &Ref{Kind: RefSearch, Text: "example project guide"},
 		},
 		{
 			name: "an unrecognised URL falls back to search on the whole string",
@@ -318,8 +318,8 @@ func TestWebURL(t *testing.T) {
 		{
 			name: "a personal space key survives escaping",
 			site: site,
-			id:   "9", spaceKey: "~5b10a2", title: "T",
-			want: site + "/wiki/spaces/~5b10a2/pages/9/T",
+			id:   "9", spaceKey: "~example123", title: "T",
+			want: site + "/wiki/spaces/~example123/pages/9/T",
 		},
 	}
 	for _, tt := range tests {
@@ -341,7 +341,7 @@ func TestSpaceURL(t *testing.T) {
 	}{
 		{"a plain key", site, "ENG", site + "/wiki/spaces/ENG"},
 		{"a trailing slash on the site is trimmed", site + "/", "ENG", site + "/wiki/spaces/ENG"},
-		{"a personal space key", site, "~5b10a2", site + "/wiki/spaces/~5b10a2"},
+		{"a personal space key", site, "~example123", site + "/wiki/spaces/~example123"},
 		{"an empty key still yields a path", site, "", site + "/wiki/spaces/"},
 	}
 	for _, tt := range tests {
@@ -359,8 +359,8 @@ func TestUnslug(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"plus signs become spaces", "Release+Management", "Release Management"},
-		{"percent escapes are decoded", "Release%20Management", "Release Management"},
+		{"plus signs become spaces", "Example+Guide", "Example Guide"},
+		{"percent escapes are decoded", "Example%20Guide", "Example Guide"},
 		{"a mix of both", "A+B%2DC", "A B-C"},
 		{"surrounding whitespace is trimmed", "+A+", "A"},
 		{"an undecodable escape leaves the string as-is rather than dropping it", "100%+done", "100% done"},

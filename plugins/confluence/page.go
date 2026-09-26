@@ -31,11 +31,11 @@ func pageCommand(c *Confluence) *cobra.Command {
 		Short:   "Pages — 'view' renders Markdown",
 		Long: `A <ref> is anything that identifies a page:
 
-  https://acme.atlassian.net/wiki/spaces/ENG/pages/123456/WIP+RFC+0010
-  https://acme.atlassian.net/wiki/x/AoCbXQ          (tiny link)
-  123456                                           (page id)
-  ENG:WIP RFC 0010 Release Management SDLC            (space:title)
-  "release management sdlc"                            (free text — best match)`,
+  https://your-tenant.atlassian.net/wiki/spaces/ENG/pages/123456/Example+Page
+  https://your-tenant.atlassian.net/wiki/x/AQAAAA  (tiny link)
+  123456                                        (page id)
+  ENG:Example Page                              (space:title)
+  "example project guide"                       (free text — best match)`,
 	}
 	cmd.AddCommand(
 		pageListCommand(c),

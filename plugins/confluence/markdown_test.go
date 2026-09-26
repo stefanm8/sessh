@@ -497,8 +497,8 @@ func TestToMarkdownBasics(t *testing.T) {
 		{"empty emphasis contributes nothing", "<p>a<strong> </strong>b</p>", "ab"},
 		{
 			name: "inline code and links",
-			in:   `<p>Run <code>npm test</code> — see <a href="https://x.dev">docs</a>.</p>`,
-			want: "Run `npm test` — see [docs](https://x.dev).",
+			in:   `<p>Run <code>npm test</code> — see <a href="https://docs.example">docs</a>.</p>`,
+			want: "Run `npm test` — see [docs](https://docs.example).",
 		},
 		{"code containing a backtick gets a longer delimiter",
 			"<p><code>a `b` c</code></p>", "``a `b` c``"},
@@ -513,9 +513,9 @@ func TestToMarkdownBasics(t *testing.T) {
 		},
 		{"mailto links are left alone", `<p><a href="mailto:a@b.c">mail</a></p>`, "[mail](mailto:a@b.c)"},
 		{"fragment links are left alone", `<p><a href="#top">top</a></p>`, "[top](#top)"},
-		{"a link with no label becomes an autolink", `<p><a href="https://x.dev"></a></p>`, "<https://x.dev>"},
+		{"a link with no label becomes an autolink", `<p><a href="https://docs.example"></a></p>`, "<https://docs.example>"},
 		{"a link with no href degrades to its label", `<p><a>label</a></p>`, "label"},
-		{"a multi-line link label is flattened", "<p><a href=\"https://x.dev\">a\n  b</a></p>", "[a b](https://x.dev)"},
+		{"a multi-line link label is flattened", "<p><a href=\"https://docs.example\">a\n  b</a></p>", "[a b](https://docs.example)"},
 		{"unordered list", "<ul><li>a</li><li>b</li></ul>", "- a\n- b"},
 		{"ordered list", "<ol><li>a</li><li>b</li></ol>", "1. a\n2. b"},
 		{"an ordered list honours its start attribute", `<ol start="3"><li>a</li><li>b</li></ol>`, "3. a\n4. b"},
@@ -547,7 +547,7 @@ func TestToMarkdownBasics(t *testing.T) {
 		{"a pre with no class has no language hint", "<pre>plain</pre>", "```\nplain\n```"},
 		{"a definition list", "<dl><dt>Term</dt><dd>Definition</dd></dl>", "**Term**\n: Definition"},
 		{"br outside a table is a Markdown hard break", "<p>a<br/>b</p>", "a  \nb"},
-		{"an image", `<p><img src="https://x.dev/a.png" alt="Alt"/></p>`, "![Alt](https://x.dev/a.png)"},
+		{"an image", `<p><img src="https://docs.example/a.png" alt="Alt"/></p>`, "![Alt](https://docs.example/a.png)"},
 		{"an image falls back to its title for alt text", `<p><img src="/a.png" title="T"/></p>`, "![T](" + site + "/a.png)"},
 		{"an image with no source renders nothing", `<p><img alt="x"/></p>`, ""},
 		{"a time element prefers its machine-readable datetime",
@@ -604,8 +604,8 @@ func TestToMarkdownTables(t *testing.T) {
 		{
 			name: "several th-first-column rows all stay data",
 			in: "<table><tbody><tr><th>Status</th><td>Draft</td></tr>" +
-				"<tr><th>Owner</th><td>Ana</td></tr></tbody></table>",
-			want: "|  |  |\n| --- | --- |\n| Status | Draft |\n| Owner | Ana |",
+				"<tr><th>Owner</th><td>Alex Example</td></tr></tbody></table>",
+			want: "|  |  |\n| --- | --- |\n| Status | Draft |\n| Owner | Alex Example |",
 		},
 		{
 			name: "a short all-th first row is not a header row either",
@@ -660,8 +660,8 @@ func TestToMarkdownTables(t *testing.T) {
 		},
 		{
 			name: "a link inside a cell survives",
-			in:   `<table><tbody><tr><th>A</th></tr><tr><td><a href="https://x.dev">d</a></td></tr></tbody></table>`,
-			want: "| A |\n| --- |\n| [d](https://x.dev) |",
+			in:   `<table><tbody><tr><th>A</th></tr><tr><td><a href="https://docs.example">d</a></td></tr></tbody></table>`,
+			want: "| A |\n| --- |\n| [d](https://docs.example) |",
 		},
 	}
 	for _, tt := range tests {
@@ -976,14 +976,14 @@ func TestToMarkdownACLink(t *testing.T) {
 		{
 			name: "an unresolved mention uses its link body when it has one",
 			in: `<ac:link><ri:user ri:account-id="abc123"/>` +
-				`<ac:plain-text-link-body><![CDATA[Ana]]></ac:plain-text-link-body></ac:link>`,
-			want: "@Ana",
+				`<ac:plain-text-link-body><![CDATA[Alex Example]]></ac:plain-text-link-body></ac:link>`,
+			want: "@Alex Example",
 		},
 		{
 			name: "a legacy userkey mention also resolves",
 			in:   `<ac:link><ri:user ri:userkey="legacy1"/></ac:link>`,
-			opts: MarkdownOptions{Users: map[string]string{"legacy1": "Ana"}},
-			want: "@Ana",
+			opts: MarkdownOptions{Users: map[string]string{"legacy1": "Alex Example"}},
+			want: "@Alex Example",
 		},
 		{
 			name: "an attachment link points at the page's download URL",
@@ -1009,14 +1009,14 @@ func TestToMarkdownACLink(t *testing.T) {
 		},
 		{
 			name: "an external url link",
-			in: `<ac:link><ri:url ri:value="https://x.dev"/>` +
+			in: `<ac:link><ri:url ri:value="https://docs.example"/>` +
 				`<ac:plain-text-link-body><![CDATA[docs]]></ac:plain-text-link-body></ac:link>`,
-			want: "[docs](https://x.dev)",
+			want: "[docs](https://docs.example)",
 		},
 		{
 			name: "an external url link with no label uses the url as its label",
-			in:   `<ac:link><ri:url ri:value="https://x.dev"/></ac:link>`,
-			want: "[https://x.dev](https://x.dev)",
+			in:   `<ac:link><ri:url ri:value="https://docs.example"/></ac:link>`,
+			want: "[https://docs.example](https://docs.example)",
 		},
 		{
 			name: "an anchor-only link points inside the current page",
@@ -1084,8 +1084,8 @@ func TestToMarkdownACImage(t *testing.T) {
 		},
 		{
 			name: "an external image",
-			in:   `<ac:image><ri:url ri:value="https://x.dev/a.png"/></ac:image>`,
-			want: "![](https://x.dev/a.png)",
+			in:   `<ac:image><ri:url ri:value="https://docs.example/a.png"/></ac:image>`,
+			want: "![](https://docs.example/a.png)",
 		},
 		{
 			name: "a site-relative external image is absolutised",
@@ -1141,8 +1141,8 @@ func TestToMarkdownProfileMacro(t *testing.T) {
 		`</ac:structured-macro></p>`
 
 	t.Run("a resolved profile macro renders the display name inline", func(t *testing.T) {
-		got := mdWith(in, MarkdownOptions{Users: map[string]string{"u1": "Ana"}})
-		if want := "Owner: @Ana"; got != want {
+		got := mdWith(in, MarkdownOptions{Users: map[string]string{"u1": "Alex Example"}})
+		if want := "Owner: @Alex Example"; got != want {
 			t.Errorf("ToMarkdown() = %q, want %q", got, want)
 		}
 	})
@@ -1202,11 +1202,11 @@ func TestToMarkdownRealisticPage(t *testing.T) {
 		`<ac:parameter ac:name="title">DRAFT</ac:parameter></ac:structured-macro></td></tr></tbody></table>` +
 		`<h2>Steps</h2><ol><li>First</li><li>Second</li></ol>`
 
-	want := "## Overview\n\nOwned by @Ana.\n\n" +
+	want := "## Overview\n\nOwned by @Alex Example.\n\n" +
 		"|  |  |\n| --- | --- |\n| Status | `DRAFT` |\n\n" +
 		"## Steps\n\n1. First\n2. Second"
 
-	got := mdWith(in, MarkdownOptions{Users: map[string]string{"u1": "Ana"}})
+	got := mdWith(in, MarkdownOptions{Users: map[string]string{"u1": "Alex Example"}})
 	if got != want {
 		t.Errorf("ToMarkdown() =\n%s\n\nwant\n%s", got, want)
 	}

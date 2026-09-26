@@ -44,6 +44,7 @@ type Handle struct {
 	// Routed reports that this session is served by another process.
 	Routed bool
 
+	server  *Server
 	closers []func()
 	once    sync.Once
 }
@@ -128,15 +129,17 @@ func Acquire(ctx context.Context, p Profile, opts AcquireOptions) (*Handle, erro
 		lock.Release()
 		return nil, err
 	}
-	h := &Handle{Session: s, Profile: p, closers: []func(){closer, lock.Release}}
+	h := &Handle{Session: s, Profile: p, closers: []func(){lock.Release, closer}}
 
 	if !opts.NoServe {
 		if srv, err := serve(s, p.Name); err == nil {
-			h.closers = append([]func(){srv.Close}, h.closers...)
+			h.server = srv
+			h.closers = append(h.closers, srv.Close)
 		} else if opts.Serve {
 			// Only worth reporting when the caller asked for sharing on
 			// purpose; for an ordinary command it is a missed optimisation.
-			notify(fmt.Sprintf("could not open the session socket for %q: %v", p.Name, err))
+			h.Close()
+			return nil, fmt.Errorf("could not open the session socket for %q: %w", p.Name, err)
 		}
 	}
 
@@ -178,4 +181,12 @@ func Forget(name string) error {
 	}
 	lock.Release()
 	return os.RemoveAll(ProfileDir(name))
+}
+
+// IdleFor measures inactivity of the shared browser, including in-flight RPCs.
+func (h *Handle) IdleFor() time.Duration {
+	if h.server == nil {
+		return 0
+	}
+	return h.server.IdleFor()
 }

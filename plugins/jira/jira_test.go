@@ -99,7 +99,7 @@ func TestBuildJQLMeAliases(t *testing.T) {
 		{"a user literally named mel", "mel", `assignee = "mel" ORDER BY updated DESC`},
 		{"@current is not an alias", "@current", `assignee = "@current" ORDER BY updated DESC`},
 		{"me with surrounding spaces is a literal", " me ", `assignee = " me " ORDER BY updated DESC`},
-		{"an account id is a literal", "5b10a2844c20165700ede21g", `assignee = "5b10a2844c20165700ede21g" ORDER BY updated DESC`},
+		{"an account id is a literal", "example-account-id", `assignee = "example-account-id" ORDER BY updated DESC`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -211,7 +211,7 @@ func TestADFToText(t *testing.T) {
 		},
 		{
 			name: "an inline node with no text contributes nothing",
-			doc:  `{"type":"mention","attrs":{"id":"abc","text":"@Ana"}}`,
+			doc:  `{"type":"mention","attrs":{"id":"abc","text":"@Example User"}}`,
 			want: "",
 		},
 		{

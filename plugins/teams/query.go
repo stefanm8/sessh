@@ -283,7 +283,7 @@ func searchCommand() *cobra.Command {
 This is ` + "`messages --grep <text>`" + ` with the pattern as a positional argument:
 the whole filter, sort and output surface of ` + "`messages`" + ` applies, and any
 explicit --grep terms must ALSO match.`,
-		Example: `  sessh teams search "deploy" --since 2026-07-06
+		Example: `  sessh teams search "deploy" --since 2026-01-01
   sessh teams search "ssh" -c "backend" -f json`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -352,8 +352,8 @@ Exits 4 when no message carries that id, so "the id is wrong" stays
 distinguishable from "the filter matched nothing" (which is a success).
 
 In json/jsonl this prints a single OBJECT rather than a one-element array.`,
-		Example: `  sessh teams show 1781773639693
-  sessh teams show 1781773639693 --raw --pretty`,
+		Example: `  sessh teams show 1700000000000
+  sessh teams show 1700000000000 --raw --pretty`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 1 {
@@ -1044,7 +1044,7 @@ var schemaFields = []schemaField{
 }
 
 var schemaMessageTypes = []schemaMessageType{
-	{"RichText/Html", "message", "The bulk of real chat content (~93%)."},
+	{"RichText/Html", "message", "Most chat content."},
 	{"Text", "message", "Plain-text chat messages."},
 	{"RichText/Media_Card", "message", "Card/media messages."},
 	{"ThreadActivity/AddMember", "system", "Dropped unless --include-system."},

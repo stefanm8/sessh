@@ -1,9 +1,8 @@
 // Package bitbucket is the sessh plugin for Bitbucket Cloud.
 //
 // It shares the `atlassian` profile with the jira and confluence plugins: one
-// Atlassian login covers all three. What used to be a hazard —
-// jira-cli reaching sideways into bitbucket-cli/userData — is a feature now
-// that the manager owns the lock.
+// Atlassian login covers all three, with access coordinated by the session
+// manager.
 package bitbucket
 
 import (
@@ -59,8 +58,7 @@ func (b *Bitbucket) Profile() session.Profile {
 //
 // The cookie jar is authoritative here, not an API call: it is readable even
 // mid-SSO, when the page is off-origin and a request would be redirected away.
-// This is the behaviour bitbucket-cli arrived at after its whoami()-based poll
-// kept losing races with login redirects.
+// This avoids racing an identity request against login redirects.
 func verify(ctx context.Context, s session.Session) error {
 	cookies, err := s.Cookies(ctx, baseURL)
 	if err != nil {

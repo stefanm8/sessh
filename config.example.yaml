@@ -1,5 +1,7 @@
 # Copy to ~/.sessh/config.yaml (or $SESSH_HOME/config.yaml).
 # Replace these examples with your own values; omit services you do not use.
+# your-workspace and your-tenant are placeholders, not shared service accounts.
+# Jira and Confluence use the site origin only, without /jira or /wiki.
 plugins:
   bitbucket:
     workspace: your-workspace

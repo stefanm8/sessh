@@ -119,7 +119,7 @@ func isLoginHost(u string) bool {
 // whoami reads the signed-in account out of the app's own storage: MSAL
 // account records when they are in local storage, and otherwise the user and
 // tenant GUIDs that Teams bakes into its per-user IndexedDB names
-// (`Teams:conversation-manager:react-web-client:<user>:<tenant>:en-us`). It is
+// (`Teams:conversation-manager:react-web-client:<user>:<tenant>:<locale>`). It is
 // best-effort by design — a missing display name must never downgrade a working
 // session to "logged out".
 func whoami(ctx context.Context, s session.Session) (session.Identity, error) {
@@ -181,9 +181,9 @@ func (t *Teams) Command() *cobra.Command {
 		Long: `Query the locally captured Teams messages, and run the capture that fills them.
 
 The query commands are read-only over messages.jsonl and never open a browser.
-` + "`sessh teams capture`" + ` is the long-running half: it holds its browser profile
-open, harvests message history out of Teams' own IndexedDB, and serves that
-profile on a socket so other sessh commands can share it.`,
+` + "`sessh teams capture start`" + ` runs capture in the background and keeps the
+browser open after you close the terminal. Use capture status, logs, and stop
+to manage it. A separate daemon is not needed.`,
 	}
 	cmd.AddCommand(queryCommands(t)...)
 	cmd.AddCommand(backfillCommand())

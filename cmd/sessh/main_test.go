@@ -71,9 +71,9 @@ func TestHelpWithoutConfiguration(t *testing.T) {
 
 func TestConfiguredPlugins(t *testing.T) {
 	isolatedConfig(t)
-	t.Setenv("JIRA_SITE", "https://acme.atlassian.net/")
-	t.Setenv("CONFLUENCE_SITE", "https://acme.atlassian.net")
-	t.Setenv("BITBUCKET_WORKSPACE", "acme")
+	t.Setenv("JIRA_SITE", "https://tenant.example/")
+	t.Setenv("CONFLUENCE_SITE", "https://tenant.example")
+	t.Setenv("BITBUCKET_WORKSPACE", "example-workspace")
 	for _, p := range plugin.All() {
 		if err := plugin.Validate(p); err != nil {
 			t.Errorf("%s: %v", p.Name(), err)

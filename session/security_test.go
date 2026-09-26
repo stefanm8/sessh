@@ -39,12 +39,12 @@ func TestPrivateState(t *testing.T) {
 }
 
 func TestValidateSiteSetting(t *testing.T) {
-	for _, value := range []string{"", "acme.atlassian.net", "file:///tmp/site", "https://user:pass@acme.atlassian.net", "https://acme.atlassian.net/wiki", "https://acme.atlassian.net?token=secret", "https://acme.atlassian.net#fragment"} {
+	for _, value := range []string{"", "tenant.example", "file:///tmp/site", "https://user:pass@tenant.example", "https://tenant.example/wiki", "https://tenant.example?token=secret", "https://tenant.example#fragment"} {
 		if err := ValidateSiteSetting("jira", value, "JIRA_SITE"); err == nil {
 			t.Errorf("accepted invalid site %q", value)
 		}
 	}
-	for _, value := range []string{"https://acme.atlassian.net", "https://acme.atlassian.net/", "http://localhost:8080"} {
+	for _, value := range []string{"https://tenant.example", "https://tenant.example/", "http://localhost:8080"} {
 		if err := ValidateSiteSetting("jira", value, "JIRA_SITE"); err != nil {
 			t.Errorf("rejected valid site %q: %v", value, err)
 		}

@@ -18,9 +18,7 @@ import (
 // and text are for humans (local times, truncated bodies); csv is for
 // spreadsheets. Keeping the output deterministic is what makes it diffable.
 //
-// These formats are not the hub's usual `format.Table` shape: they are the
-// documented output of the Node CLI this replaces, and scripts already parse
-// them, so they are ported rather than re-styled.
+// Output field names and layout are kept stable for scripts that parse them.
 
 const (
 	formatJSON  = "json"
@@ -107,9 +105,8 @@ func (r record) MarshalJSON() ([]byte, error) {
 	return b.Bytes(), nil
 }
 
-// jsonBytes encodes without HTML escaping: message bodies routinely contain
-// `<`, `>` and `&`, and < noise makes the output unreadable and needlessly
-// different from what the Node CLI emitted.
+// jsonBytes encodes without HTML escaping to keep the `<`, `>` and `&`
+// characters in message bodies readable.
 func jsonBytes(v any, pretty bool) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

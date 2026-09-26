@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -15,8 +16,8 @@ import (
 	"github.com/stefanm8/sessh/session"
 )
 
-// `sessh auth login` is the only headed code path in the binary.
-// Everything else runs headless and takes the profile as it finds it.
+// `sessh auth login` opens a visible browser for manual authentication.
+// Ordinary session-backed commands use the saved session headlessly.
 
 func newAuthCommand() *cobra.Command {
 	auth := &cobra.Command{
@@ -25,7 +26,8 @@ func newAuthCommand() *cobra.Command {
 		Long: `Log in once, use the session everywhere.
 
 A login belongs to a *profile*, not to a plugin: every plugin that names the
-same profile shares it. Nothing but ` + format.Bold("auth login") + ` ever opens a browser window.`,
+same profile shares it. Use ` + format.Bold("auth login") + ` to open a browser and sign in.
+Other commands open the same window when they find the session lapsed.`,
 	}
 
 	auth.AddCommand(&cobra.Command{
@@ -207,6 +209,12 @@ func statusOne(ctx context.Context, owner plugin.Plugin, verbose bool) (bool, er
 
 	h, err := plugin.Acquire(ctx, owner, session.AcquireOptions{})
 	if err != nil {
+		var busy *session.ErrBusy
+		if errors.As(err, &busy) && session.LoggingIn(p.Name) {
+			fmt.Printf("%s %s %s\n", label, format.Yellow("sign-in in progress"),
+				format.Gray(fmt.Sprintf("(profile %s) — finish it in the open browser window", p.Name)))
+			return false, nil
+		}
 		if session.IsAuth(err) {
 			fmt.Printf("%s %s %s\n", label, format.Yellow("session expired"),
 				format.Gray(fmt.Sprintf("(profile %s) — run: sessh auth login %s", p.Name, owner.Name())))

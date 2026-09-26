@@ -12,30 +12,21 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stefanm8/sessh/format"
+	"github.com/stefanm8/sessh/internal/background"
 	"github.com/stefanm8/sessh/plugin"
 	"github.com/stefanm8/sessh/session"
 )
 
-// capture.go is the port of teams-cli/capture/capture.js onto the session hub.
-//
-// The shape of the Node original survives — id-then-content dedupe, an
-// append-only messages log beside a rewritten conversation sidecar, an
-// IndexedDB harvest on a timer, a defensive normalizer — but the *plumbing*
-// inverts. capture.js owned a Playwright Page and hung callbacks off it. Here a
-// plugin gets only serializable methods, because the same Session is served
-// in-process and over a unix socket to whoever holds the profile.
-// Callbacks cannot cross that boundary, so the live capture
-// and the auto-scroller live inside the page (capturejs.go) and this file polls
-// them. That is the one architectural deviation, and it is deliberate.
-//
-// This command is also why AcquireOptions.Serve exists: it holds a browser
-// profile for hours, and serving it on a socket is what turns the old
-// SingletonLock collision into other sessh commands quietly sharing the session.
+// Capture combines an append-only message log, a conversation sidecar, and
+// deduplication with periodic reads of Teams' IndexedDB. Live event collection
+// and scrolling run in the page and are polled through the serializable Session
+// interface, so capture works both locally and through a shared browser socket.
 
 const (
 	// Teams populates its IndexedDB connections as the app boots; harvesting
@@ -60,45 +51,60 @@ const (
 
 func captureCommand(t *Teams) *cobra.Command {
 	var cfg captureConfig
-
+	var detached bool
 	cmd := &cobra.Command{
-		Use:   "capture",
-		Short: "Capture Teams messages into the local store",
-		Long: `Run the Teams capture daemon.
+		Use: "capture", Short: "Capture Teams messages into the local store",
+		Long: `Capture Teams messages using your saved login.
 
-It holds the Teams browser profile open and serves it on a socket, so other sessh
-commands share this session instead of failing to launch. On a timer it reads
-Teams' own IndexedDB — the only place a complete message body reliably lands,
-since live WebSocket traffic carries notification envelopes — and appends what
-is new to messages.jsonl, keeping conversations.jsonl in step.
+  sessh auth login teams          # sign in once
+  sessh teams capture start       # keep capturing after closing the terminal
+  sessh teams capture status      # check progress or login errors
+  sessh teams capture logs -f     # follow background output
+  sessh teams capture stop        # clean shutdown
 
-Runs until interrupted. Ctrl+C is a clean shutdown.`,
+Capture keeps its browser open and shares it with other sessh commands; no
+separate daemon is needed. It reads Teams' local cache into messages.jsonl.
+By default it also opens and scrolls chats to load history, marking them read.
+Use --no-scroll to capture only what Teams already cached.
+
+Without a subcommand, runs in the foreground. Ctrl+C is a clean shutdown.
+Use --once to refresh the local store once and exit.`,
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			ctx := cmd.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			if err := cfg.resolve(); err != nil {
-				return err
-			}
-			return runCapture(ctx, t, cfg)
-		},
 	}
-
-	f := cmd.Flags()
+	run := func(c *cobra.Command, _ []string) error {
+		if err := cfg.resolve(); err != nil {
+			return err
+		}
+		spec := plugin.Service("teams capture", t)
+		if detached || c.Name() == "start" {
+			if cfg.once {
+				return fmt.Errorf("--once runs in the foreground; use sessh teams capture --once")
+			}
+			return plugin.StartBackground(c, spec, nil)
+		}
+		return spec.Run(c.Context(), func(ctx context.Context, report func(string, string)) error {
+			cfg.report = report
+			return runCapture(ctx, t, cfg)
+		})
+	}
+	cmd.RunE = run
+	f := cmd.PersistentFlags()
 	f.StringVar(&cfg.dataDir, "data-dir", "", "directory holding the capture files (default $TEAMS_DATA_DIR or ~/.sessh/teams)")
 	f.StringVar(&cfg.out, "out", "", "messages file to append to (default <data-dir>/messages.jsonl)")
 	f.BoolVar(&cfg.headed, "headed", false, "show the browser window (needs the profile to itself)")
-	f.BoolVar(&cfg.noScroll, "no-scroll", false, "do not open and scroll conversations to widen the harvest")
+	f.BoolVar(&cfg.noScroll, "no-scroll", false, "do not open and scroll conversations (avoids marking chats read)")
 	f.DurationVar(&cfg.idbInterval, "idb-interval", 60*time.Second, "how often to re-read Teams' IndexedDB")
 	f.DurationVar(&cfg.pollInterval, "poll-interval", 5*time.Second, "how often to drain the in-page live capture")
 	f.BoolVar(&cfg.once, "once", false, "harvest IndexedDB once and exit")
 	f.BoolVar(&cfg.verbose, "verbose", false, "log every captured message")
+	cmd.Flags().BoolVarP(&detached, "background", "d", false, "start in the background (same as capture start)")
+	cmd.AddCommand(&cobra.Command{Use: "start", Short: "Start capturing in the background and return to your shell", Args: cobra.NoArgs, RunE: run})
+	plugin.AddServiceControls(cmd, cobra.NoArgs, func(_ []string) (background.Spec, error) { return plugin.Service("teams capture", t), nil })
 	return cmd
 }
 
 type captureConfig struct {
+	report       func(string, string)
 	dataDir      string
 	out          string
 	headed       bool
@@ -116,8 +122,7 @@ type captureConfig struct {
 }
 
 // resolve applies the documented precedence — flag, then environment, then the
-// shared default — for every path, and keeps the env knobs of the Node capture
-// working where they were public.
+// shared default — for every path and loads the optional capture settings.
 func (c *captureConfig) resolve() error {
 	dir := c.dataDir
 	if dir == "" {
@@ -175,10 +180,8 @@ type interceptConfig struct {
 	MaxBytes   int    `json:"maxBytes"`
 }
 
-// captureSelectors is DEFAULT_SELECTORS from scroller.js. It lives on the Go
-// side so the Teams markup can be retargeted without touching the shim, which
-// is the same reason the Node driver kept it configurable: these are candidates
-// tried in order, and Teams' markup shifts.
+// captureSelectors holds fallback selectors tried in order. Keeping them on
+// the Go side allows Teams markup changes without changing the page shim.
 type captureSelectors struct {
 	List        []string `json:"list"`
 	MessagePane []string `json:"messagePane"`
@@ -208,7 +211,7 @@ var defaultSelectors = captureSelectors{
 	Avatar: `img, [data-tid="PersonaAvatar"], [class*="Avatar" i]`,
 }
 
-// scrollerConfig is DEFAULTS from scroller.js, every knob env-overridable.
+// scrollerConfig holds the environment-overridable scroll settings.
 type scrollerConfig struct {
 	Version                  string           `json:"version"`
 	Selectors                captureSelectors `json:"selectors"`
@@ -268,9 +271,9 @@ func envInt(name string, def int64) int64 {
 // ---------------------------------------------------------------------------
 
 // runCapture owns the durable state — the output file and both dedupe sets —
-// and re-acquires a session when one dies, exactly as the Node supervisor
-// relaunched Chromium. Keeping that state out here is what makes a relaunch
-// idempotent: the sets never reload, so a restart cannot re-append the backlog.
+// and re-acquires a session when one dies. Keeping that state outside the
+// session makes a relaunch idempotent: the sets never reload, so a restart
+// cannot re-append the backlog.
 func runCapture(ctx context.Context, t *Teams, cfg captureConfig) error {
 	w, err := openCaptureWriter(cfg)
 	if err != nil {
@@ -318,6 +321,9 @@ func runCapture(ctx context.Context, t *Teams, cfg captureConfig) error {
 		}
 		captureWarn("session ended: %v", err)
 		captureWarn("restart %d/%d in %s", failures, maxRestarts, restartDelay.Round(time.Second))
+		if cfg.report != nil {
+			cfg.report("recovering", fmt.Sprintf("Retrying in %s: %v", restartDelay, err))
+		}
 		if err := sleepCtx(ctx, restartDelay); err != nil {
 			return nil
 		}
@@ -414,9 +420,15 @@ func (r *captureRun) note(err error) error {
 	if err == nil {
 		r.failures = 0
 		r.lastErr = ""
+		if r.cfg.report != nil {
+			r.cfg.report("running", "Capturing messages to "+r.cfg.messagesPath)
+		}
 		return nil
 	}
 	r.failures++
+	if r.cfg.report != nil {
+		r.cfg.report("recovering", err.Error())
+	}
 	if msg := err.Error(); msg != r.lastErr {
 		captureWarn("%v", err)
 		r.lastErr = msg
@@ -671,11 +683,23 @@ type captureWriter struct {
 	convOrder []string
 }
 
-func openCaptureWriter(cfg captureConfig) (*captureWriter, error) {
+func openCaptureWriter(cfg captureConfig) (_ *captureWriter, err error) {
 	for _, dir := range []string{filepath.Dir(cfg.messagesPath), filepath.Dir(cfg.convPath)} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return nil, fmt.Errorf("creating %s: %w", dir, err)
 		}
+	}
+	f, err := os.OpenFile(cfg.messagesPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("opening %s: %w", cfg.messagesPath, err)
+	}
+	defer func() {
+		if err != nil {
+			_ = f.Close()
+		}
+	}()
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return nil, fmt.Errorf("another capture is already writing %s: %w", cfg.messagesPath, err)
 	}
 	w := &captureWriter{
 		messagesPath: cfg.messagesPath,
@@ -706,10 +730,6 @@ func openCaptureWriter(cfg captureConfig) (*captureWriter, error) {
 		return nil, err
 	}
 
-	f, err := os.OpenFile(cfg.messagesPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("opening %s: %w", cfg.messagesPath, err)
-	}
 	w.f = f
 	return w, nil
 }
@@ -752,8 +772,8 @@ func (w *captureWriter) write(c captured) (bool, error) {
 }
 
 // conversationRecord is one line of the sidecar: what turns a conversationId
-// GUID into a human-readable name. Empty fields are omitted rather than written
-// as JSON null (the Node capture wrote nulls); LoadConversations reads either.
+// GUID into a human-readable name. Empty fields are omitted;
+// LoadConversations accepts both missing fields and JSON null.
 type conversationRecord struct {
 	ID                 string               `json:"id"`
 	Type               string               `json:"type,omitempty"`
@@ -1219,9 +1239,7 @@ func stripHTML(s string) string {
 func normalizeMessage(raw map[string]any, source string) *Message {
 	id := strings.TrimSpace(jsonString(pickField(raw,
 		"id", "Id", "messageId", "MessageId", "clientMessageId", "ClientMessageId", "clientmessageid")))
-	// The Node version stringified a missing id to the literal "undefined" and
-	// wrote one such record per run. A message nothing can address is useless to
-	// every query downstream, so we drop it.
+	// Messages without an ID cannot be addressed or deduplicated reliably.
 	if id == "" {
 		return nil
 	}
@@ -1258,9 +1276,8 @@ func normalizeMessage(raw map[string]any, source string) *Message {
 		CapturedAt: isoNow(),
 		Source:     source,
 	}
-	// Not encoding/json's default: it escapes <, > and & as \u00xx, and `raw` is
-	// meant to be the payload Teams sent, byte-comparable with what the Node
-	// capture wrote.
+	// Keep <, > and & readable in the provider payload instead of using
+	// encoding/json's default HTML escaping.
 	if b, err := marshalJSON(raw); err == nil {
 		m.Raw = b
 	}

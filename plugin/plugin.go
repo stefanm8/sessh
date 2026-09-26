@@ -6,12 +6,18 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
+	"os"
+	"runtime"
 	"sort"
 	"sync"
 
 	"github.com/spf13/cobra"
 
+	"github.com/stefanm8/sessh/format"
 	"github.com/stefanm8/sessh/session"
 )
 
@@ -80,7 +86,7 @@ type Flags struct {
 	Profile   string // --profile: override the profile directory
 	From      string // --from: seed a new profile from this one instead of `default`
 	NoInherit bool   // --no-inherit: start a new profile empty
-	Login     bool   // --login: open a headed window if the session has lapsed
+	NoLogin   bool   // --no-login: report a lapsed session instead of opening a login window
 	Verbose   bool   // --verbose: print session bookkeeping to stderr
 }
 
@@ -99,46 +105,116 @@ type Runner func(ctx context.Context, s session.Session, cmd *cobra.Command, arg
 // learn. It returns a cobra RunE: when the command runs, it resolves the owning
 // plugin's profile, acquires a session, and passes it in. Commands that need no
 // browser use a plain RunE and none is ever launched.
+//
+// A session that turns out to be signed out, whether while it is acquired or
+// in a request the command makes, opens a login window. The command waits for
+// the user to finish and then runs once more. --no-login reports it instead.
 func WithSession(owner Plugin, fn Runner) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		h, err := Acquire(ctx, owner, session.AcquireOptions{})
-		if err != nil {
+		return runSession(ctx, owner, func(ctx context.Context, s session.Session) error {
+			return fn(ctx, s, cmd, args)
+		})
+	}
+}
+
+// Seams for tests: the real ones launch browsers.
+var (
+	acquireFn = Acquire
+	reloginFn = relogin
+)
+
+// runSession runs fn, recovering at most once from a lapsed session: by a
+// login of its own, or by waiting out one another process has open.
+func runSession(ctx context.Context, owner Plugin, fn func(context.Context, session.Session) error) error {
+	for recovered := false; ; recovered = true {
+		err := attempt(ctx, owner, fn)
+		if err == nil || recovered || !interactive() {
 			return err
 		}
-		defer h.Close()
-		return fn(ctx, h.Session, cmd, args)
+		switch {
+		case waitForLogin(ctx, err):
+		case session.IsAuth(err):
+			if err := reloginFn(ctx, owner, err); err != nil {
+				return err
+			}
+		default:
+			return err
+		}
 	}
+}
+
+// attempt runs fn with a fresh session. The session is closed before any
+// login, which needs the profile to itself.
+func attempt(ctx context.Context, owner Plugin, fn func(context.Context, session.Session) error) error {
+	h, err := acquireFn(ctx, owner, session.AcquireOptions{})
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+	return forbidden(ctx, h, fn(ctx, h.Session))
+}
+
+// forbidden tells "signed out" from "not allowed": a 403 from a session that
+// still passes Verify is a permission problem, which a login would not fix.
+func forbidden(ctx context.Context, h *session.Handle, err error) error {
+	var ae *session.AuthError
+	if !errors.As(err, &ae) || ae.Status != http.StatusForbidden {
+		return err
+	}
+	if h.Profile.Verify != nil && h.Profile.Verify(ctx, h.Session) != nil {
+		return err
+	}
+	where := ae.URL
+	if u, perr := url.Parse(ae.URL); perr == nil {
+		u.RawQuery = ""
+		where = u.String()
+	}
+	return fmt.Errorf("access denied (HTTP 403) for %s: profile %s is signed in, so the account may lack permission", where, h.Profile.Name)
+}
+
+// interactive reports whether a lapsed session may open a login window: not
+// with --no-login, and not where no window can open.
+func interactive() bool {
+	if globalFlags.NoLogin {
+		return false
+	}
+	return runtime.GOOS != "linux" || os.Getenv("DISPLAY") != "" || os.Getenv("WAYLAND_DISPLAY") != ""
+}
+
+// waitForLogin waits out the one kind of busy profile that resolves itself: a
+// login window open in another process, which does not share its session.
+// That login decides for this command too.
+func waitForLogin(ctx context.Context, err error) bool {
+	var busy *session.ErrBusy
+	if !errors.As(err, &busy) || !session.LoggingIn(busy.Profile) {
+		return false
+	}
+	fmt.Fprintln(cobraErr(), format.Gray("Waiting for the sign-in already in progress for profile "+busy.Profile+"..."))
+	release, _, err := session.LockLogin(ctx, busy.Profile, nil)
+	if err != nil {
+		return false
+	}
+	release()
+	return true
 }
 
 // Acquire resolves a plugin's profile through the shared flags and hands back
 // a live session handle. Long-running commands (which want to serve a socket)
-// call this directly rather than through WithSession.
+// call this directly rather than through WithSession. It never opens a window.
 func Acquire(ctx context.Context, owner Plugin, opts session.AcquireOptions) (*session.Handle, error) {
 	if err := Validate(owner); err != nil {
 		return nil, err
 	}
-	p := owner.Profile()
-	p.Name = session.ResolveProfileName(owner.Name(), globalFlags.Profile, p.Name)
 	opts.Seed.From = globalFlags.From
 	opts.Seed.NoInherit = globalFlags.NoInherit
 	if opts.Notify == nil && globalFlags.Verbose {
 		opts.Notify = func(msg string) { fmt.Fprintln(cobraErr(), "sessh:", msg) }
 	}
-
-	h, err := session.Acquire(ctx, p, opts)
-	if err == nil || !session.IsAuth(err) || !globalFlags.Login {
-		return h, err
-	}
-	// --login: the user asked for a headed re-auth in place rather than the
-	// usual "run: sessh auth login".
-	if err := Login(ctx, owner, LoginOptions{}); err != nil {
-		return nil, err
-	}
-	return session.Acquire(ctx, p, opts)
+	return session.Acquire(ctx, ProfileFor(owner), opts)
 }
 
 // ProfileFor resolves the profile a plugin would use right now.

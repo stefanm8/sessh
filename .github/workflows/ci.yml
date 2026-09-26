@@ -37,18 +37,31 @@ jobs:
         run: |
           TARGETS="$(go env GOOS)/$(go env GOARCH)" make dist VERSION=0.0.0-ci
           export SESSH_RELEASE_DIR=dist SESSH_INSTALL_DIR="$RUNNER_TEMP/sessh-install"
+          export SESSH_SHELL_RC="$RUNNER_TEMP/sessh-bashrc"
+          printf 'export ORIGINAL_SETTING=preserved\n' > "$SESSH_SHELL_RC"
           sh dist/install.sh
+          bash --noprofile --norc -c '. "$1"; sessh --version' bash "$SESSH_SHELL_RC"
           "$RUNNER_TEMP/sessh-install/sessh" --version | grep -F 'sessh version 0.0.0-ci'
           export SESSH_HOME="$RUNNER_TEMP/sessh-state"
           "$RUNNER_TEMP/sessh-install/sessh" --help
           "$RUNNER_TEMP/sessh-install/sessh" auth list
           "$RUNNER_TEMP/sessh-install/sessh" teams schema -f json
+          cp "$SESSH_SHELL_RC" "$SESSH_SHELL_RC.original"
+          sh dist/install.sh --autostart teams
+          sh dist/install.sh --autostart teams
+          test "$(grep -c '^# >>> sessh autostart >>>$' "$SESSH_SHELL_RC")" -eq 1
+          test "$(grep -c '^# >>> sessh PATH >>>$' "$SESSH_SHELL_RC")" -eq 1
+          bash -n "$SESSH_SHELL_RC"
+          "$RUNNER_TEMP/sessh-install/sessh" autostart disable --rc "$SESSH_SHELL_RC"
+          cmp "$SESSH_SHELL_RC" "$SESSH_SHELL_RC.original"
           printf 'corrupt' >> dist/sessh_*.tar.gz
           if sh dist/install.sh; then
             echo 'Installer accepted a corrupt archive' >&2
             exit 1
           fi
           "$RUNNER_TEMP/sessh-install/sessh" --version | grep -F 'sessh version 0.0.0-ci'
+          SESSH_INSTALL_DIR="$RUNNER_TEMP/sessh-source" make install VERSION=0.0.0-source
+          "$RUNNER_TEMP/sessh-source/sessh" --version | grep -F 'sessh version 0.0.0-source'
 
   release:
     if: startsWith(github.ref, 'refs/tags/v') && github.event_name == 'push'

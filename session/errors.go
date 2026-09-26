@@ -16,6 +16,11 @@ var ErrAuth = errors.New("not authenticated")
 type AuthError struct {
 	Profile string
 	Detail  string
+	// Status and URL identify the response that reported the failure: 401 or
+	// 403, or 0 for a redirect to a login page. Both are empty when a Verify
+	// hook or the transport reported it.
+	Status int
+	URL    string
 }
 
 func (e *AuthError) Error() string {
@@ -40,6 +45,7 @@ func IsAuth(err error) bool { return errors.Is(err, ErrAuth) }
 type ErrBusy struct {
 	Profile string
 	Holder  string
+	PID     int // the holder's process, or 0 when unknown
 }
 
 func (e *ErrBusy) Error() string {

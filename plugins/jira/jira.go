@@ -5,7 +5,7 @@
 // id.atlassian.com SSO session (minted by a Bitbucket login) and no tenant
 // cookie at all, in which case a direct API call 401s. Verify navigates to the
 // tenant, lets Atlassian complete SSO silently, and polls until the session
-// lands — the silent-SSO path that used to live in jira-cli alone.
+// becomes available.
 package jira
 
 import (

@@ -83,8 +83,8 @@ var emoticons = map[string]string{
 
 // MarkdownOptions carries the context a body needs to render absolute links.
 type MarkdownOptions struct {
-	Site     string            // https://x.atlassian.net
-	Wiki     string            // https://x.atlassian.net/wiki
+	Site     string            // https://your-tenant.atlassian.net
+	Wiki     string            // https://your-tenant.atlassian.net/wiki
 	SpaceKey string            // space of the page, for bare page links
 	PageID   string            // id of the page, for attachment URLs
 	Users    map[string]string // accountId -> display name, for @mentions

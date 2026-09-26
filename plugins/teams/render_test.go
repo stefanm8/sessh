@@ -7,8 +7,7 @@ import (
 	"testing"
 )
 
-// sampleMessage is the fixture the Node CLI's format tests used, so the ported
-// output contracts can be compared byte for byte.
+// sampleMessage is a synthetic fixture for the stable output contract.
 func sampleMessage() *Message {
 	return &Message{
 		ID: "m2", ConversationID: "convA", Sender: "Alice",

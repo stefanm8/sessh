@@ -83,7 +83,7 @@ func testDirectory(convs ...*Conversation) *Directory {
 func TestResolveConversations(t *testing.T) {
 	dir := testDirectory(
 		&Conversation{ID: "19:aaa@thread.v2", Title: "Backend Team", ChannelName: "Backend", TeamName: "Engineering"},
-		&Conversation{ID: "19:bbb@thread.v2", Title: "Design Sync", Members: []string{"Ana Popescu"}},
+		&Conversation{ID: "19:bbb@thread.v2", Title: "Design Sync", Members: []string{"Alex Example"}},
 		&Conversation{ID: "19:ccc@thread.v2", Title: "Backend Standup"},
 	)
 
@@ -127,7 +127,7 @@ func TestResolveConversations(t *testing.T) {
 	})
 
 	t.Run("a member name is searchable", func(t *testing.T) {
-		test, err := resolveConversations([]string{"Ana Popescu"}, dir)
+		test, err := resolveConversations([]string{"Alex Example"}, dir)
 		if err != nil {
 			t.Fatalf("error = %v", err)
 		}
@@ -262,9 +262,9 @@ func TestSearchableText(t *testing.T) {
 	t.Run("every name and member is searchable", func(t *testing.T) {
 		got := searchableText(&Conversation{
 			Title: "T", DisplayName: "D", ShortTitle: "S", LongTitle: "L",
-			ChannelName: "C", TeamName: "M", Members: []string{"Ana", "Bo"},
+			ChannelName: "C", TeamName: "M", Members: []string{"Alex", "Blair"},
 		})
-		for _, want := range []string{"T", "D", "S", "L", "C", "M", "Ana", "Bo"} {
+		for _, want := range []string{"T", "D", "S", "L", "C", "M", "Alex", "Blair"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("searchableText() = %q, missing %q", got, want)
 			}
@@ -303,18 +303,18 @@ func TestBuildPredicate(t *testing.T) {
 
 	t.Run("a conversation test is applied", func(t *testing.T) {
 		keep := buildPredicate(filterSpec{convTest: func(id string) bool { return id == "c1" }})
-		if !keep(msg("1", "c1", "Ana", "x")) || keep(msg("2", "c2", "Ana", "x")) {
+		if !keep(msg("1", "c1", "Alex", "x")) || keep(msg("2", "c2", "Alex", "x")) {
 			t.Error("only the named conversation should survive")
 		}
 	})
 
 	t.Run("senders OR within the flag and match as a substring", func(t *testing.T) {
-		keep := buildPredicate(filterSpec{senders: []string{"ana", "bo"}})
+		keep := buildPredicate(filterSpec{senders: []string{"alex", "blair"}})
 		cases := map[string]bool{
-			"Ana Popescu": true,
-			"Bogdan":      true,
-			"Ioana":       true, // substring: "ana" is inside "Ioana"
-			"Cristina":    false,
+			"Alex Example":     true,
+			"Blair Example":    true,
+			"PrefixAlexSuffix": true, // match within a word, not only at name/word boundaries
+			"Casey Example":    false,
 		}
 		for sender, want := range cases {
 			if got := keep(msg("1", "c", sender, "x")); got != want {
@@ -380,17 +380,17 @@ func TestBuildPredicate(t *testing.T) {
 
 	t.Run("repeated greps AND, because a second pattern narrows", func(t *testing.T) {
 		keep := buildPredicate(filterSpec{grep: compileGrep([]string{"deploy", "friday"})})
-		if !keep(msg("1", "c", "Ana", "deploy on friday")) {
+		if !keep(msg("1", "c", "Alex", "deploy on friday")) {
 			t.Error("a body matching both patterns should be kept")
 		}
-		if keep(msg("2", "c", "Ana", "deploy on monday")) {
+		if keep(msg("2", "c", "Alex", "deploy on monday")) {
 			t.Error("a body matching only one pattern should be dropped")
 		}
 	})
 
 	t.Run("grep matches the body, not the metadata", func(t *testing.T) {
-		keep := buildPredicate(filterSpec{grep: compileGrep([]string{"Ana"})})
-		if keep(msg("1", "c", "Ana", "nothing relevant")) {
+		keep := buildPredicate(filterSpec{grep: compileGrep([]string{"Alex"})})
+		if keep(msg("1", "c", "Alex", "nothing relevant")) {
 			t.Error("--grep must not match on the sender name")
 		}
 	})
@@ -407,16 +407,16 @@ func TestBuildPredicate(t *testing.T) {
 
 	t.Run("different filters AND across each other", func(t *testing.T) {
 		keep := buildPredicate(filterSpec{
-			senders: []string{"ana"},
+			senders: []string{"alex"},
 			grep:    compileGrep([]string{"deploy"}),
 		})
-		if !keep(msg("1", "c", "Ana", "deploy")) {
+		if !keep(msg("1", "c", "Alex", "deploy")) {
 			t.Error("a row satisfying both filters should be kept")
 		}
-		if keep(msg("2", "c", "Bo", "deploy")) {
+		if keep(msg("2", "c", "Blair", "deploy")) {
 			t.Error("failing the sender filter should drop the row")
 		}
-		if keep(msg("3", "c", "Ana", "lunch")) {
+		if keep(msg("3", "c", "Alex", "lunch")) {
 			t.Error("failing the grep filter should drop the row")
 		}
 	})
@@ -499,13 +499,13 @@ func TestBuildFilter(t *testing.T) {
 	})
 
 	t.Run("senders are lower-cased so matching is case-insensitive", func(t *testing.T) {
-		f, cmd := newFilterCmd(t, "--sender", "Ana", "--sender", "BO")
+		f, cmd := newFilterCmd(t, "--sender", "Alex", "--sender", "BLAIR")
 		spec, err := f.buildFilter(cmd, nil, clock)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(spec.senders) != 2 || spec.senders[0] != "ana" || spec.senders[1] != "bo" {
-			t.Errorf("senders = %v, want [ana bo]", spec.senders)
+		if len(spec.senders) != 2 || spec.senders[0] != "alex" || spec.senders[1] != "blair" {
+			t.Errorf("senders = %v, want [alex blair]", spec.senders)
 		}
 	})
 

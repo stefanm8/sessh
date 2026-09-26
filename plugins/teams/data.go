@@ -76,7 +76,7 @@ func DataDirDefault() string {
 }
 
 // ResolveMessagesPath applies the documented resolution order: --source, then
-// $TEAMS_MESSAGES_FILE, then the project default. The FIRST configured
+// $TEAMS_MESSAGES_FILE, then the shared data-directory default. The FIRST configured
 // candidate is authoritative — we never silently fall through from an explicit
 // source to a lower-priority one, or `--source /typo` would quietly read the
 // default file.

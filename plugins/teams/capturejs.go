@@ -2,34 +2,21 @@ package teams
 
 // capturejs.go is the in-page half of the capture daemon.
 //
-// The Node capture attached Playwright listeners from the driver side
-// (`page.on('response')`, `ws.on('framereceived')`, a DOM driver holding the
-// Page). None of that survives the hub's process boundary: Session exposes only
-// serializable methods so the identical interface can be served in-process and
-// over a unix socket, and a callback cannot be JSON-RPC'd back to
-// a caller that may live in another process. So everything event-driven moves
-// *into* the page and reports through polling:
+// Session exposes serializable operations across the browser process boundary.
+// Event listeners therefore run inside the page and report through polling:
 //
-//   - jsInstallInterceptor wraps fetch/XHR/WebSocket and buffers message-shaped
-//     payloads on window.__sesshCapture; Go drains that buffer on a timer.
-//   - jsInstallScroller runs the conversation sweep on its own in-page schedule
-//     and keeps counters; Go reads them on the same timer.
-//   - jsDumpIDB is the one piece that was already an in-page function in
-//     capture.js, and is carried over close to verbatim.
+//   - jsInstallInterceptor buffers fetch/XHR/WebSocket message payloads.
+//   - jsInstallScroller loads conversation history on an in-page schedule.
+//   - jsDumpIDB reads the cached messages and conversation metadata.
 //
-// Everything here is defensive to the point of paranoia and swallows its own
-// errors: this code runs inside someone's live Teams tab, and a capture bug
-// must never break the app it is watching.
+// The shims catch their own errors so capture does not break the Teams tab.
 
 // captureShimVersion is stamped into both shims. A sessh build with new shim
 // behaviour bumps it, and install replaces an older shim still running in a page
 // held by another process (the routed case).
 const captureShimVersion = "3"
 
-// captureEndpointRe matches the hosts Teams message traffic actually uses. Port
-// of isTeamsEndpoint() plus teams.cloud.microsoft, which is where Teams v2
-// redirects and where the Node version was, in practice, matching on the
-// skype.com API hosts alone.
+// captureEndpointRe matches Teams' public message and API service hosts.
 const captureEndpointRe = `teams\.microsoft\.com|teams\.cloud\.microsoft|skype\.com|skypedata\.com|substrate\.office\.com|graph\.microsoft\.com`
 
 // captureHintRe is a cheap pre-filter applied to the raw response text before
@@ -199,8 +186,7 @@ const jsStopShims = `() => {
   return stopped;
 }`
 
-// jsInstallScroller installs window.__sesshScroll: the ConversationScroller
-// orchestration and TeamsDomDriver of scroller.js, fused and moved in-page.
+// jsInstallScroller installs an in-page conversation history loader.
 //
 // Why it opens chats at all: the IndexedDB harvest can only read what Teams has
 // already cached, and Teams lazy-loads history — a thread gets a deep
@@ -208,15 +194,13 @@ const jsStopShims = `() => {
 // widens the harvest window from "threads you happened to look at" to "every
 // thread in the rail".
 //
-// SIDE EFFECT, unchanged from the Node version: opening a conversation marks it
+// Opening a conversation marks it
 // read and may send a read receipt, exactly as a human click would. That is
 // inherent to forcing history to load. maxConversationsPerSweep caps the blast
 // radius and dryRun validates the selectors without clicking anything.
 //
-// Deviation: the Node driver stamped an attribute and asked Playwright for a
-// *trusted* click. From inside the page there is no such thing, so we call
-// el.click() (falling back to a synthetic MouseEvent). React listens at the root
-// and does not check isTrusted, so the row activates the same way.
+// The page shim uses el.click(), falling back to a synthetic MouseEvent, to
+// activate a conversation. Teams must accept untrusted events for this to work.
 const jsInstallScroller = `(cfg) => {
   const W = window;
   if (W.__sesshScroll) { try { W.__sesshScroll.stop(); } catch (e) {} }
@@ -512,9 +496,7 @@ const jsInstallScroller = `(cfg) => {
   return { installed: true, dryRun: !!cfg.dryRun };
 }`
 
-// jsDumpIDB reads Teams' own IndexedDB caches — the direct port of
-// dumpIDBMessages() from capture.js, which was already a self-contained in-page
-// function.
+// jsDumpIDB reads Teams' own IndexedDB caches.
 //
 // This is the authoritative source, not a backstop: the live WS traffic carries
 // Trouter notification envelopes rather than full message bodies, so IDB is

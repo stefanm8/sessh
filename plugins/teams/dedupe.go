@@ -9,8 +9,8 @@ import (
 	"strings"
 )
 
-// dedupe.go is the port of capture/dedupe.js: the *content* identity of a
-// message, used alongside id-dedupe by the capture writer.
+// dedupe.go defines the content identity of a message, used alongside
+// id-dedupe by the capture writer.
 //
 // Id-dedupe is correct only as long as every copy of a message carries the same
 // id, and it does not: the same logical message seen through the IndexedDB
@@ -18,7 +18,7 @@ import (
 // clientMessageId in the other, so id-dedupe keeps both. Content identity —
 // author + conversation + timestamp + body — collapses those.
 //
-// Two rules here were learned from the real data and must not be relaxed:
+// Two rules prevent missed duplicates and accidental merges:
 //
 //  1. Timestamps arrive in mixed formats (epoch-ms strings AND ISO-8601).
 //     Canonicalize, or the same message from two sources will not match.
@@ -31,11 +31,9 @@ var epochDigits = regexp.MustCompile(`^\d{10,}$`)
 
 // canonicalTS reduces a timestamp to a stable number.
 //
-// It is deliberately NOT epochToMs: a 10-digit (seconds) value is used as-is,
-// exactly as dedupe.js does. This is an identity, not an instant — all that
-// matters is that two views of one message reduce to the same number, and
-// rescaling here would only risk colliding a seconds value with a different
-// message's milliseconds value.
+// It is deliberately NOT epochToMs: a 10-digit (seconds) value is used as-is.
+// This is an identity, not an instant — rescaling numeric timestamps would risk
+// colliding a seconds value with a different message's milliseconds value.
 func canonicalTS(s string) (int64, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -48,9 +46,8 @@ func canonicalTS(s string) (int64, bool) {
 		}
 		return n, true
 	}
-	// Zone-less strings are read as UTC here where JS Date.parse would read
-	// them as local. Harmless: both sources of one message go through this
-	// function, so the two still agree.
+	// Read zone-less strings as UTC so content identity does not depend on the
+	// machine's local timezone.
 	t, ok := parseAnyTime(s)
 	if !ok {
 		return 0, false

@@ -79,12 +79,14 @@ func (s *browserSession) Do(_ context.Context, req *http.Request) (*http.Respons
 	finalURL := res.URL()
 
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return nil, Authf(s.profile.Name, "not authenticated (HTTP %d) for %s. Run: sessh auth login --profile %s",
-			status, s.profile.Origin, s.profile.Name)
+		return nil, &AuthError{Profile: s.profile.Name, Status: status, URL: url, Detail: fmt.Sprintf(
+			"not authenticated (HTTP %d) for %s. Run: sessh auth login --profile %s",
+			status, s.profile.Origin, s.profile.Name)}
 	}
 	if looksLikeLogin(finalURL) {
-		return nil, Authf(s.profile.Name, "session expired (redirected to %s). Run: sessh auth login --profile %s",
-			finalURL, s.profile.Name)
+		return nil, &AuthError{Profile: s.profile.Name, URL: url, Detail: fmt.Sprintf(
+			"session expired (redirected to %s). Run: sessh auth login --profile %s",
+			finalURL, s.profile.Name)}
 	}
 
 	hdr := http.Header{}
@@ -165,18 +167,34 @@ func isContextDestroyed(err error) bool {
 
 func (s *browserSession) Navigate(_ context.Context, rawurl string) (string, error) {
 	url := ResolveAgainst(s.profile.Origin, rawurl)
-	if _, err := s.page.Goto(url, playwright.PageGotoOptions{
+	// A navigation that fails still usually leaves the page somewhere useful
+	// (an SSO bounce, say), so report where we ended up. Either way the page
+	// has been pointed somewhere on purpose, and a later Eval must not move it.
+	_, _ = s.page.Goto(url, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 		Timeout:   playwright.Float(60000),
-	}); err != nil {
-		// A navigation that fails still usually leaves the page somewhere
-		// useful (an SSO bounce, say), so report where we ended up.
-		return s.page.URL(), nil
-	}
+	})
 	s.mu.Lock()
 	s.primed = true
 	s.mu.Unlock()
 	return s.page.URL(), nil
+}
+
+// Observe wraps a session so that Navigate reports where the page already is
+// instead of moving it. Interactive login polls Verify through it: a Verify
+// that navigates to mint a session would otherwise reload the page on which
+// the user is typing credentials.
+func Observe(s Session) Session { return observer{s} }
+
+type observer struct{ Session }
+
+func (o observer) Navigate(ctx context.Context, _ string) (string, error) {
+	if b, ok := o.Session.(*browserSession); ok {
+		return b.page.URL(), nil
+	}
+	var href string
+	err := o.Session.Eval(ctx, `() => location.href`, nil, &href)
+	return href, err
 }
 
 func (s *browserSession) Cookies(_ context.Context, rawurl string) ([]Cookie, error) {
@@ -264,7 +282,7 @@ func launch(profile Profile, opts launchOptions) (*browserSession, func(), error
 }
 
 // launchDir opens a specific user-data directory. Everything goes through
-// ProfileDir except the migration importer, which reads a foreign profile.
+// ProfileDir except ImportProfile, which reads an existing Chromium profile.
 func launchDir(dir string, profile Profile, opts launchOptions) (*browserSession, func(), error) {
 	pw, err := playwrightRun()
 	if err != nil {

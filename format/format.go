@@ -1,8 +1,8 @@
-// Package format is the output layer, modeled on `gh`'s conventions and
-// carried over from the Node CLIs this replaces:
+// Package format renders human-readable terminal output and machine-readable
+// output when redirected:
 //   - interactive TTY: aligned, colorized columns;
 //   - piped or redirected: plain tab-separated values, no color, so
-//     `sessh repo list | cut -f1` just works.
+//     `sessh bitbucket repo list | cut -f1` just works.
 package format
 
 import (

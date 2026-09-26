@@ -10,10 +10,10 @@ import (
 //
 // Anything you can copy out of Confluence should work as a page argument:
 //
-//	https://site.atlassian.net/wiki/spaces/ENG/pages/123456/WIP+RFC+0010
+//	https://your-tenant.atlassian.net/wiki/spaces/ENG/pages/123456/Example+Page
 //	/wiki/spaces/ENG/pages/123456
-//	https://site.atlassian.net/wiki/x/AoCbXQ            (tiny link)
-//	https://site.atlassian.net/wiki/display/ENG/Some+Page
+//	https://your-tenant.atlassian.net/wiki/x/AQAAAA            (tiny link)
+//	https://your-tenant.atlassian.net/wiki/display/ENG/Some+Page
 //	.../pages/viewpage.action?pageId=123456
 //	123456                                          (bare id)
 //	ENG:Some Page Title                                (space:title)
@@ -97,7 +97,7 @@ func ParseRef(input string) *Ref {
 	}
 
 	// SPACE:Title — a key never contains whitespace, which keeps titles that
-	// merely contain a colon ("RFC 10: Naming") out of this branch.
+	// merely contain a colon ("Example Guide: Naming") out of this branch.
 	if m := spaceTitle.FindStringSubmatch(s); m != nil && !strings.ContainsAny(m[1], " \t\n") {
 		return &Ref{Kind: RefTitle, Space: m[1], Title: strings.TrimSpace(m[2])}
 	}

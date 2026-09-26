@@ -19,7 +19,7 @@ func ValidateSiteSetting(plugin, value, env string) error {
 	u, err := url.Parse(value)
 	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") ||
 		u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return fmt.Errorf("%s site must be an http(s) origin such as https://acme.atlassian.net; check %s or plugins.%s.site", plugin, env, plugin)
+		return fmt.Errorf("%s site must be an http(s) origin such as https://your-tenant.atlassian.net; check %s or plugins.%s.site", plugin, env, plugin)
 	}
 	return nil
 }
@@ -31,9 +31,9 @@ func ValidateSiteSetting(plugin, value, env string) error {
 //	plugins:
 //	  jira:
 //	    profile: work           # this plugin uses a different browser identity
-//	    site: https://acme.atlassian.net
+//	    site: https://your-tenant.atlassian.net
 //	  bitbucket:
-//	    workspace: acme
+//	    workspace: your-workspace
 type Config struct {
 	Profile string                       `yaml:"profile"`
 	Plugins map[string]map[string]string `yaml:"plugins"`

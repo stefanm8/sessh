@@ -106,11 +106,8 @@ func exportStorageState(parent string) (json.RawMessage, error) {
 	return s.StorageState()
 }
 
-// ImportProfile seeds a sessh profile from a *foreign* Chromium user-data
-// directory — the `userData/` folders the Node CLIs this replaces have been
-// logging in to for months. Migration is much less annoying if
-// step one is not "log in again everywhere", and the mechanism is the same
-// storage-state copy inheritance already uses: credentials, never data.
+// ImportProfile seeds a sessh profile from an existing Chromium user-data
+// directory, copying cookies and localStorage without message history or caches.
 func ImportProfile(name, fromDir string) error {
 	if _, err := os.Stat(filepath.Join(fromDir, "Default")); err != nil {
 		return fmt.Errorf("%s does not look like a Chromium profile (no Default/ inside)", fromDir)

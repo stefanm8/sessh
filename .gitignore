@@ -11,10 +11,7 @@ coverage.*
 .env.*
 !.env.example
 .sessh/
-.seesh/
-.zai/
 /config.yaml
-userData/
 profiles/
 data/
 *.jsonl

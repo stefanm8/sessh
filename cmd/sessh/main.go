@@ -68,7 +68,9 @@ func newRootCommand() *cobra.Command {
 sessh owns the Chromium profiles. Each plugin declares which profile it needs;
 plugins that name the same profile share one login (bitbucket, jira and
 confluence are all one Atlassian account). Log in once with ` + format.Bold("sessh auth login") + `;
-every other command runs headless against the saved session.`,
+every other command runs headless against the saved session. When a session
+has lapsed, the command opens a browser window, waits for you to log in, and
+then continues (--no-login reports the error instead).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
@@ -78,11 +80,15 @@ every other command runs headless against the saved session.`,
 	pf.StringVar(&flags.Profile, "profile", "", "browser profile to use (default: the plugin's own)")
 	pf.StringVar(&flags.From, "from", "", "when creating a profile, seed it from this one instead of `default`")
 	pf.BoolVar(&flags.NoInherit, "no-inherit", false, "when creating a profile, start it empty")
-	pf.BoolVar(&flags.Login, "login", false, "open a headed window if the session has lapsed")
+	pf.BoolVar(&flags.NoLogin, "no-login", false, "fail instead of opening a login window when the session has lapsed")
+	pf.Bool("login", false, "")
+	_ = pf.MarkDeprecated("login", "a lapsed session opens a login window by default")
 	pf.BoolVar(&flags.Verbose, "verbose", false, "print session bookkeeping to stderr")
 
 	root.AddCommand(newAuthCommand())
 	root.AddCommand(newDaemonCommand())
+	root.AddCommand(newAutostartCommand())
+	root.AddCommand(newSetupCommand())
 	for _, p := range plugin.All() {
 		root.AddCommand(p.Command())
 	}

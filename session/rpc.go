@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,10 +29,12 @@ type rpcRequest struct {
 }
 
 type rpcResponse struct {
-	ID     int             `json:"id"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  string          `json:"error,omitempty"`
-	Auth   bool            `json:"auth,omitempty"` // error is an ErrAuth
+	ID         int             `json:"id"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	Auth       bool            `json:"auth,omitempty"` // error is an ErrAuth
+	AuthStatus int             `json:"authStatus,omitempty"`
+	AuthURL    string          `json:"authURL,omitempty"`
 }
 
 type doParams struct {
@@ -60,11 +63,14 @@ type evalParams struct {
 // Server exposes a live session on the profile's socket for the lifetime of
 // the lock holder.
 type Server struct {
-	sess    *browserSession
-	ln      net.Listener
-	path    string
-	closing chan struct{}
-	once    sync.Once
+	sess           *browserSession
+	ln             net.Listener
+	path           string
+	closing        chan struct{}
+	once           sync.Once
+	activityMu     sync.Mutex
+	lastActivity   time.Time
+	activeRequests int
 }
 
 func serve(s *browserSession, name string) (*Server, error) {
@@ -82,13 +88,13 @@ func serve(s *browserSession, name string) (*Server, error) {
 	}
 	ln, err := net.Listen("unix", path)
 	if err != nil {
-		return nil, err
+		return nil, socketError(err, path)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = ln.Close()
 		return nil, fmt.Errorf("restricting session socket permissions: %w", err)
 	}
-	srv := &Server{sess: s, ln: ln, path: path, closing: make(chan struct{})}
+	srv := &Server{sess: s, ln: ln, path: path, closing: make(chan struct{}), lastActivity: time.Now()}
 	go srv.acceptLoop()
 	return srv, nil
 }
@@ -166,11 +172,26 @@ func (s *Server) handle(conn net.Conn) {
 }
 
 func (s *Server) dispatch(req *rpcRequest, pageSession func() (*browserSession, error)) *rpcResponse {
+	if req.Method != "ping" {
+		s.activityMu.Lock()
+		s.activeRequests++
+		s.activityMu.Unlock()
+		defer func() {
+			s.activityMu.Lock()
+			s.activeRequests--
+			s.lastActivity = time.Now()
+			s.activityMu.Unlock()
+		}()
+	}
 	ctx := context.Background()
 	out := &rpcResponse{ID: req.ID}
 	fail := func(err error) *rpcResponse {
 		out.Error = err.Error()
 		out.Auth = IsAuth(err)
+		var ae *AuthError
+		if errors.As(err, &ae) {
+			out.AuthStatus, out.AuthURL = ae.Status, ae.URL
+		}
 		return out
 	}
 	ok := func(v any) *rpcResponse {
@@ -337,7 +358,7 @@ func (c *rpcClient) call(method string, params, out any) error {
 	}
 	if res.Error != "" {
 		if res.Auth {
-			return &AuthError{Profile: c.profile.Name, Detail: res.Error}
+			return &AuthError{Profile: c.profile.Name, Detail: res.Error, Status: res.AuthStatus, URL: res.AuthURL}
 		}
 		return fmt.Errorf("%s", res.Error)
 	}
@@ -347,8 +368,12 @@ func (c *rpcClient) call(method string, params, out any) error {
 	return json.Unmarshal(res.Result, out)
 }
 
+// Relative URLs are resolved here, against the caller's origin: the holder
+// would resolve them against its own, and plugins sharing a profile need not
+// share an origin (a bitbucket command routed through a jira daemon).
+
 func (c *rpcClient) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
-	p := doParams{Method: req.Method, Path: req.URL.String(), Headers: map[string]string{}}
+	p := doParams{Method: req.Method, Path: ResolveAgainst(c.profile.Origin, req.URL.String()), Headers: map[string]string{}}
 	for k := range req.Header {
 		p.Headers[k] = req.Header.Get(k)
 	}
@@ -412,7 +437,7 @@ func (c *rpcClient) Eval(_ context.Context, js string, arg, out any) error {
 
 func (c *rpcClient) Navigate(_ context.Context, rawurl string) (string, error) {
 	var final string
-	if err := c.call("navigate", rawurl, &final); err != nil {
+	if err := c.call("navigate", ResolveAgainst(c.profile.Origin, rawurl), &final); err != nil {
 		return "", err
 	}
 	return final, nil
@@ -420,7 +445,7 @@ func (c *rpcClient) Navigate(_ context.Context, rawurl string) (string, error) {
 
 func (c *rpcClient) Cookies(_ context.Context, rawurl string) ([]Cookie, error) {
 	var out []Cookie
-	if err := c.call("cookies", rawurl, &out); err != nil {
+	if err := c.call("cookies", ResolveAgainst(c.profile.Origin, rawurl), &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -446,4 +471,24 @@ func (c *rpcClient) storageState() (json.RawMessage, error) {
 		return nil, err
 	}
 	return st, nil
+}
+
+// IdleFor is zero while any client request is in flight. Health probes do not
+// extend the lifetime of an otherwise idle daemon.
+func (s *Server) IdleFor() time.Duration {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	if s.activeRequests > 0 {
+		return 0
+	}
+	return time.Since(s.lastActivity)
+}
+
+// socketError explains the usual reason a socket cannot be created under a
+// custom SESSH_HOME: Unix socket paths are limited to about 100 bytes.
+func socketError(err error, path string) error {
+	if len(path) < 100 {
+		return err
+	}
+	return fmt.Errorf("%w (the socket path is %d bytes; Unix sockets allow about 100, so use a shorter SESSH_HOME)", err, len(path))
 }

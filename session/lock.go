@@ -1,12 +1,14 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // A Chromium profile is single-process. Rather than let two commands race into
@@ -34,9 +36,9 @@ func acquireLock(name string) (*profileLock, error) {
 		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		holder := readHolder(path)
+		holder, pid := readHolder(path)
 		_ = f.Close()
-		return nil, &ErrBusy{Profile: name, Holder: holder}
+		return nil, &ErrBusy{Profile: name, Holder: holder, PID: pid}
 	}
 	// Record who we are, for a friendlier "busy" message elsewhere.
 	_ = f.Truncate(0)
@@ -53,36 +55,100 @@ func (l *profileLock) Release() {
 	l.f = nil
 }
 
-func readHolder(path string) string {
+func readHolder(path string) (string, int) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return ""
+		return "", 0
 	}
 	line := strings.TrimSpace(string(b))
 	if line == "" {
-		return ""
+		return "", 0
 	}
 	parts := strings.SplitN(line, " ", 2)
 	if len(parts) == 2 {
 		if pid, err := strconv.Atoi(parts[0]); err == nil {
-			return fmt.Sprintf("pid %d: %s", pid, parts[1])
+			return fmt.Sprintf("pid %d: %s", pid, parts[1]), pid
 		}
 	}
-	return line
+	return line, 0
 }
 
 // Holder describes the process currently holding a profile, or "" when it is
 // free. It probes without blocking, so it is safe to call for display.
 func Holder(name string) string {
+	holder, _ := holding(name)
+	return holder
+}
+
+// HolderPID is the process holding a profile, or 0 when it is free.
+func HolderPID(name string) int {
+	_, pid := holding(name)
+	return pid
+}
+
+func holding(name string) (string, int) {
 	path := lockPath(name)
 	f, err := os.OpenFile(path, os.O_RDWR, 0o600)
 	if err != nil {
-		return ""
+		return "", 0
 	}
 	defer f.Close()
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return readHolder(path)
 	}
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	return ""
+	return "", 0
+}
+
+// Interactive logins are serialized per profile by a second lock, so commands
+// that find the session lapsed at the same time open one browser window
+// between them instead of one each.
+
+func loginLockPath(name string) string { return filepath.Join(RunDir(), name+".login.lock") }
+
+// LockLogin takes the profile's login lock, polling until it is free or ctx
+// ends. waiting is called once if another process holds it; waited reports
+// whether that happened, because the other login may already have signed the
+// profile in.
+func LockLogin(ctx context.Context, name string, waiting func()) (release func(), waited bool, err error) {
+	if err := os.MkdirAll(RunDir(), 0o700); err != nil {
+		return nil, false, err
+	}
+	f, err := os.OpenFile(loginLockPath(name), os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, false, err
+	}
+	for {
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return func() {
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				_ = f.Close()
+			}, waited, nil
+		}
+		if !waited && waiting != nil {
+			waiting()
+		}
+		waited = true
+		select {
+		case <-ctx.Done():
+			_ = f.Close()
+			return nil, waited, ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// LoggingIn reports whether any process is running an interactive login for
+// the profile. It probes without blocking.
+func LoggingIn(name string) bool {
+	f, err := os.OpenFile(loginLockPath(name), os.O_RDWR, 0o600)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return true
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	return false
 }
