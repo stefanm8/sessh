@@ -36,8 +36,12 @@ Providers live in `plugins/`; the shared contract lives in `plugin/plugin.go`.
 Each provider implements `Name`, `Profile`, and `Command`, and registers itself
 with `plugin.Register` in `init`. The CLI imports it in `cmd/sessh/main.go`.
 
-Use `plugin.WithSession` for browser-backed commands and ordinary Cobra handlers
-for local queries. Keep browser lifecycle and shared-session routing in `session`.
+Use `plugin.WithSession` for browser-backed reads and ordinary Cobra handlers
+for local queries. Use `plugin.WithMutationSession` for HTTP writes: it can
+recover authentication before a write, but never replays a command after any
+write was attempted, including when a later read fails. Test writes against
+local fixtures, including lost responses and dry-runs. Keep browser lifecycle
+and shared-session routing in `session`.
 Configure tenant URLs, workspace names, and identities through environment
 variables or `plugins.<name>` in the user's config file. Validate required
 settings before launching a browser. Do not add a developer's organization as a

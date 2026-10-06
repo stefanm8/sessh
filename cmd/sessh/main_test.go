@@ -14,10 +14,46 @@ func isolatedConfig(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("SESSH_HOME", home)
-	for _, key := range []string{"SESSH_PROFILE", "BITBUCKET_WORKSPACE", "JIRA_SITE", "CONFLUENCE_SITE"} {
+	for _, key := range []string{"SESSH_PROFILE", "SESSH_KEEP_ALIVE", "BITBUCKET_WORKSPACE", "JIRA_SITE", "CONFLUENCE_SITE"} {
 		t.Setenv(key, "")
 	}
 	return home
+}
+
+func TestKeepAliveFlags(t *testing.T) {
+	isolatedConfig(t)
+	root := newRootCommand()
+	var out bytes.Buffer
+	root.SetOut(&out)
+	root.SetArgs([]string{"--keep-alive", "7m", "--no-keep-alive", "jira", "--help"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	flags := plugin.GlobalFlags()
+	if flags.KeepAlive != "7m" || !flags.NoKeepAlive {
+		t.Fatalf("flags were not bound: %+v", flags)
+	}
+	if !strings.Contains(out.String(), "--keep-alive") || !strings.Contains(out.String(), "--no-keep-alive") {
+		t.Fatal("warm browser controls missing from command help")
+	}
+}
+
+func TestInvalidKeepAliveDoesNotOpenBrowser(t *testing.T) {
+	for _, value := range []string{"-1m", "tomorrow"} {
+		t.Run(value, func(t *testing.T) {
+			home := isolatedConfig(t)
+			t.Setenv("JIRA_SITE", "https://tenant.example")
+			root := newRootCommand()
+			root.SetArgs([]string{"jira", "project", "list", "--keep-alive=" + value})
+			err := root.Execute()
+			if err == nil || !strings.Contains(err.Error(), "invalid keep-alive") {
+				t.Fatalf("error = %v, want keep-alive validation", err)
+			}
+			if _, err := os.Stat(filepath.Join(home, "profiles")); !os.IsNotExist(err) {
+				t.Fatalf("invalid option touched browser profiles: %v", err)
+			}
+		})
+	}
 }
 
 func TestMissingConfiguration(t *testing.T) {

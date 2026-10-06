@@ -23,9 +23,11 @@ import (
 // every other command.
 
 type rpcRequest struct {
-	ID     int             `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params,omitempty"`
+	ID       int             `json:"id"`
+	Method   string          `json:"method"`
+	Origin   string          `json:"origin,omitempty"` // caller's origin; older clients use the holder's
+	Params   json.RawMessage `json:"params,omitempty"`
+	Deadline int64           `json:"deadline,omitempty"` // Unix milliseconds; older clients omit it
 }
 
 type rpcResponse struct {
@@ -71,7 +73,13 @@ type Server struct {
 	activityMu     sync.Mutex
 	lastActivity   time.Time
 	activeRequests int
+	activeClients  int
+	tabsMu         sync.Mutex
+	idleTabs       []*browserSession // oldest first, at most one per origin
+	tabsClosed     bool
 }
+
+const maxIdleTabs = 8
 
 func serve(s *browserSession, name string) (*Server, error) {
 	if err := os.MkdirAll(RunDir(), 0o700); err != nil {
@@ -119,29 +127,142 @@ func (s *Server) Close() {
 		close(s.closing)
 		_ = s.ln.Close()
 		_ = os.Remove(s.path)
+		s.tabsMu.Lock()
+		s.tabsClosed = true
+		idle := s.idleTabs
+		s.idleTabs = nil
+		s.tabsMu.Unlock()
+		for _, tab := range idle {
+			_ = tab.page.Close()
+		}
 	})
+}
+
+// leasePage gives one connection exclusive use of a page. Idle pages retain
+// their DOM, but never the previous connection's identity or authorization.
+func (s *Server) leasePage(origin string) (*browserSession, func(), error) {
+	if origin == "" {
+		origin = s.sess.profile.Origin
+	}
+	key := pageOrigin(origin)
+	s.tabsMu.Lock()
+	if s.tabsClosed {
+		s.tabsMu.Unlock()
+		return nil, nil, net.ErrClosed
+	}
+	var client *browserSession
+	for i, tab := range s.idleTabs {
+		if pageOrigin(tab.profile.Origin) == key {
+			client = tab
+			s.idleTabs = append(s.idleTabs[:i], s.idleTabs[i+1:]...)
+			break
+		}
+	}
+	s.tabsMu.Unlock()
+	if client != nil && client.page.IsClosed() {
+		client = nil
+	}
+	if client == nil {
+		var err error
+		client, err = s.sess.fork(origin)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		client.profile.Origin = origin
+		client.mu.Lock()
+		client.primed = key != "" && pageOrigin(client.page.URL()) == key
+		client.mu.Unlock()
+	}
+	// Creation happens without the pool lock; shutdown may have won meanwhile.
+	s.tabsMu.Lock()
+	closed := s.tabsClosed
+	s.tabsMu.Unlock()
+	if closed {
+		_ = client.page.Close()
+		return nil, nil, net.ErrClosed
+	}
+	var once sync.Once
+	return client, func() { once.Do(func() { s.releasePage(client) }) }, nil
+}
+
+func (s *Server) releasePage(client *browserSession) {
+	key := pageOrigin(client.profile.Origin)
+	client.mu.Lock()
+	client.ident, client.hasIdnt = Identity{}, false
+	usable := !client.unusable && !client.page.IsClosed()
+	client.primed = usable && key != "" && pageOrigin(client.page.URL()) == key
+	client.mu.Unlock()
+	var discard *browserSession
+	s.tabsMu.Lock()
+	if s.tabsClosed || !usable || key == "" {
+		discard = client
+	} else {
+		for _, tab := range s.idleTabs {
+			if pageOrigin(tab.profile.Origin) == key {
+				discard = client
+				break
+			}
+		}
+		if discard == nil {
+			if len(s.idleTabs) == maxIdleTabs {
+				discard = s.idleTabs[0]
+				s.idleTabs = s.idleTabs[1:]
+			}
+			s.idleTabs = append(s.idleTabs, client)
+		}
+	}
+	s.tabsMu.Unlock()
+	if discard != nil {
+		_ = discard.page.Close()
+	}
 }
 
 func (s *Server) handle(conn net.Conn) {
 	defer conn.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-s.closing:
+			cancel()
+			_ = conn.Close()
+		case <-ctx.Done():
+		}
+	}()
 
-	// Page work for this client happens on a page of its own, created on first
-	// use and closed with the connection. HTTP needs no page at all, so a
-	// client that only reads APIs never costs one.
+	// Page work leases an exclusive page on first use and returns it to the
+	// warm pool with the connection. HTTP-only clients never create a page.
 	var (
-		client  *browserSession
-		release func()
+		client        *browserSession
+		release       func()
+		requestOrigin string
+		active        bool
 	)
 	defer func() {
 		if release != nil {
 			release()
 		}
+		if active {
+			s.activityMu.Lock()
+			s.activeClients--
+			s.lastActivity = time.Now()
+			s.activityMu.Unlock()
+		}
 	}()
 	pageSession := func() (*browserSession, error) {
-		if client != nil {
+		origin := requestOrigin
+		if origin == "" {
+			origin = s.sess.profile.Origin
+		}
+		if client != nil && client.profile.Origin == origin {
 			return client, nil
 		}
-		c, closer, err := s.sess.fork()
+		if release != nil {
+			release()
+			client, release = nil, nil
+		}
+		c, closer, err := s.leasePage(origin)
 		if err != nil {
 			return nil, err
 		}
@@ -149,15 +270,40 @@ func (s *Server) handle(conn net.Conn) {
 		return client, nil
 	}
 
-	r := bufio.NewReaderSize(conn, 1<<20)
 	w := bufio.NewWriterSize(conn, 1<<20)
-	dec := json.NewDecoder(r)
+	requests := make(chan rpcRequest)
+	// Keep one reader waiting even while dispatch is running, so disconnecting
+	// a cancelled CLI also interrupts its browser work and releases its lease.
+	go func() {
+		defer cancel()
+		dec := json.NewDecoder(bufio.NewReaderSize(conn, 1<<20))
+		for {
+			var req rpcRequest
+			if err := dec.Decode(&req); err != nil {
+				return
+			}
+			select {
+			case requests <- req:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 	for {
 		var req rpcRequest
-		if err := dec.Decode(&req); err != nil {
+		select {
+		case req = <-requests:
+		case <-ctx.Done():
 			return
 		}
-		res := s.dispatch(&req, pageSession)
+		if req.Method != "ping" && !active {
+			s.activityMu.Lock()
+			s.activeClients++
+			s.activityMu.Unlock()
+			active = true
+		}
+		requestOrigin = req.Origin
+		res := s.dispatchContext(ctx, &req, pageSession)
 		b, err := json.Marshal(res)
 		if err != nil {
 			return
@@ -172,6 +318,10 @@ func (s *Server) handle(conn net.Conn) {
 }
 
 func (s *Server) dispatch(req *rpcRequest, pageSession func() (*browserSession, error)) *rpcResponse {
+	return s.dispatchContext(context.Background(), req, pageSession)
+}
+
+func (s *Server) dispatchContext(parent context.Context, req *rpcRequest, pageSession func() (*browserSession, error)) *rpcResponse {
 	if req.Method != "ping" {
 		s.activityMu.Lock()
 		s.activeRequests++
@@ -183,7 +333,12 @@ func (s *Server) dispatch(req *rpcRequest, pageSession func() (*browserSession, 
 			s.activityMu.Unlock()
 		}()
 	}
-	ctx := context.Background()
+	deadline := time.Now().Add(65 * time.Second)
+	if req.Deadline != 0 && time.UnixMilli(req.Deadline).Before(deadline) {
+		deadline = time.UnixMilli(req.Deadline)
+	}
+	ctx, cancel := context.WithDeadline(parent, deadline)
+	defer cancel()
 	out := &rpcResponse{ID: req.ID}
 	fail := func(err error) *rpcResponse {
 		out.Error = err.Error()
@@ -201,6 +356,9 @@ func (s *Server) dispatch(req *rpcRequest, pageSession func() (*browserSession, 
 		}
 		out.Result = b
 		return out
+	}
+	if err := ctx.Err(); err != nil {
+		return fail(err)
 	}
 
 	switch req.Method {
@@ -309,22 +467,32 @@ func (s *Server) dispatch(req *rpcRequest, pageSession func() (*browserSession, 
 // ---------------------------------------------------------------------------
 
 type rpcClient struct {
-	conn    net.Conn
-	dec     *json.Decoder
-	mu      sync.Mutex
-	nextID  int
-	profile Profile
+	conn       net.Conn
+	dec        *json.Decoder
+	gate       chan struct{}
+	gateOnce   sync.Once
+	nextID     int
+	profile    Profile
+	identityMu sync.Mutex
+	ident      Identity
+	hasIdnt    bool
 }
 
 var _ Session = (*rpcClient)(nil)
 
 func dialProfile(name string) (*rpcClient, error) {
-	conn, err := net.DialTimeout("unix", SocketPath(name), 2*time.Second)
+	return dialProfileContext(context.Background(), name)
+}
+
+func dialProfileContext(ctx context.Context, name string) (*rpcClient, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", SocketPath(name))
 	if err != nil {
 		return nil, err
 	}
 	c := &rpcClient{conn: conn, dec: json.NewDecoder(bufio.NewReaderSize(conn, 1<<20))}
-	if err := c.call("ping", nil, nil); err != nil {
+	if err := c.callContext(ctx, "ping", nil, nil); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
@@ -334,10 +502,51 @@ func dialProfile(name string) (*rpcClient, error) {
 func (c *rpcClient) Close() error { return c.conn.Close() }
 
 func (c *rpcClient) call(method string, params, out any) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	return c.callContext(context.Background(), method, params, out)
+}
+
+func (c *rpcClient) callContext(ctx context.Context, method string, params, out any) error {
+	c.gateOnce.Do(func() { c.gate = make(chan struct{}, 1) })
+	select {
+	case c.gate <- struct{}{}:
+		defer func() { <-c.gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(65 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := c.conn.SetDeadline(deadline); err != nil {
+		return err
+	}
+	interrupted := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		_ = c.conn.SetDeadline(time.Now())
+		close(interrupted)
+	})
+	defer func() {
+		if !stop() {
+			<-interrupted
+		}
+		_ = c.conn.SetDeadline(time.Time{})
+	}()
+	fail := func(err error) error {
+		// A late response must never be mistaken for a later call's response.
+		_ = c.conn.Close()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			return context.DeadlineExceeded
+		}
+		return fmt.Errorf("session daemon request failed: %w", err)
+	}
 	c.nextID++
-	req := rpcRequest{ID: c.nextID, Method: method}
+	req := rpcRequest{ID: c.nextID, Method: method, Origin: c.profile.Origin, Deadline: deadline.UnixMilli()}
 	if params != nil {
 		b, err := json.Marshal(params)
 		if err != nil {
@@ -350,11 +559,14 @@ func (c *rpcClient) call(method string, params, out any) error {
 		return err
 	}
 	if _, err := c.conn.Write(append(b, '\n')); err != nil {
-		return err
+		return fail(err)
 	}
 	var res rpcResponse
 	if err := c.dec.Decode(&res); err != nil {
-		return fmt.Errorf("session daemon closed the connection: %w", err)
+		return fail(err)
+	}
+	if res.ID != req.ID {
+		return fail(fmt.Errorf("unexpected response ID %d (wanted %d)", res.ID, req.ID))
 	}
 	if res.Error != "" {
 		if res.Auth {
@@ -373,6 +585,17 @@ func (c *rpcClient) call(method string, params, out any) error {
 // share an origin (a bitbucket command routed through a jira daemon).
 
 func (c *rpcClient) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	if deadline, ok := req.Context().Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(req.Context(), cancel)
+	defer func() { stop(); cancel() }()
 	p := doParams{Method: req.Method, Path: ResolveAgainst(c.profile.Origin, req.URL.String()), Headers: map[string]string{}}
 	for k := range req.Header {
 		p.Headers[k] = req.Header.Get(k)
@@ -385,7 +608,7 @@ func (c *rpcClient) Do(ctx context.Context, req *http.Request) (*http.Response, 
 		p.Body = body
 	}
 	var r doResult
-	if err := c.call("do", p, &r); err != nil {
+	if err := c.callContext(ctx, "do", p, &r); err != nil {
 		return nil, err
 	}
 	hdr := http.Header{}
@@ -423,7 +646,7 @@ func (c *rpcClient) GetJSON(ctx context.Context, path string, out any) error {
 	return json.Unmarshal(raw.JSON, out)
 }
 
-func (c *rpcClient) Eval(_ context.Context, js string, arg, out any) error {
+func (c *rpcClient) Eval(ctx context.Context, js string, arg, out any) error {
 	p := evalParams{JS: js}
 	if arg != nil {
 		b, err := json.Marshal(arg)
@@ -432,20 +655,20 @@ func (c *rpcClient) Eval(_ context.Context, js string, arg, out any) error {
 		}
 		p.Arg = b
 	}
-	return c.call("eval", p, out)
+	return c.callContext(ctx, "eval", p, out)
 }
 
-func (c *rpcClient) Navigate(_ context.Context, rawurl string) (string, error) {
+func (c *rpcClient) Navigate(ctx context.Context, rawurl string) (string, error) {
 	var final string
-	if err := c.call("navigate", ResolveAgainst(c.profile.Origin, rawurl), &final); err != nil {
+	if err := c.callContext(ctx, "navigate", ResolveAgainst(c.profile.Origin, rawurl), &final); err != nil {
 		return "", err
 	}
 	return final, nil
 }
 
-func (c *rpcClient) Cookies(_ context.Context, rawurl string) ([]Cookie, error) {
+func (c *rpcClient) Cookies(ctx context.Context, rawurl string) ([]Cookie, error) {
 	var out []Cookie
-	if err := c.call("cookies", ResolveAgainst(c.profile.Origin, rawurl), &out); err != nil {
+	if err := c.callContext(ctx, "cookies", ResolveAgainst(c.profile.Origin, rawurl), &out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -455,14 +678,34 @@ func (c *rpcClient) Cookies(_ context.Context, rawurl string) ([]Cookie, error) 
 // *plugin's* origin, and the process holding the profile may be a different
 // plugin entirely (a teams capture serving a jira command, say).
 func (c *rpcClient) Whoami(ctx context.Context) (Identity, error) {
-	if c.profile.Whoami == nil {
-		var id Identity
-		if err := c.call("whoami", nil, &id); err != nil {
-			return Identity{}, err
-		}
+	c.identityMu.Lock()
+	if c.hasIdnt {
+		id := c.ident
+		c.identityMu.Unlock()
 		return id, nil
 	}
-	return c.profile.Whoami(ctx, c)
+	c.identityMu.Unlock()
+	var id Identity
+	var err error
+	if c.profile.Whoami == nil {
+		err = c.callContext(ctx, "whoami", nil, &id)
+	} else {
+		id, err = c.profile.Whoami(ctx, c)
+	}
+	if err != nil {
+		return Identity{}, err
+	}
+	c.RememberIdentity(id)
+	return id, nil
+}
+
+func (c *rpcClient) RememberIdentity(id Identity) {
+	if id.Empty() {
+		return
+	}
+	c.identityMu.Lock()
+	c.ident, c.hasIdnt = id, true
+	c.identityMu.Unlock()
 }
 
 func (c *rpcClient) storageState() (json.RawMessage, error) {
@@ -473,12 +716,12 @@ func (c *rpcClient) storageState() (json.RawMessage, error) {
 	return st, nil
 }
 
-// IdleFor is zero while any client request is in flight. Health probes do not
-// extend the lifetime of an otherwise idle daemon.
+// IdleFor is zero while a working client remains connected, including time
+// between its requests. Health probes do not extend the daemon's lifetime.
 func (s *Server) IdleFor() time.Duration {
 	s.activityMu.Lock()
 	defer s.activityMu.Unlock()
-	if s.activeRequests > 0 {
+	if s.activeRequests > 0 || s.activeClients > 0 {
 		return 0
 	}
 	return time.Since(s.lastActivity)

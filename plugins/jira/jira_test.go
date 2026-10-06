@@ -120,7 +120,7 @@ func TestEscapeJQL(t *testing.T) {
 		{"one quote", `a"b`, `a\"b`},
 		{"several quotes", `"a" "b"`, `\"a\" \"b\"`},
 		{"empty", "", ""},
-		{"a backslash is left alone", `a\b`, `a\b`},
+		{"a backslash is escaped", `a\b`, `a\\b`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -210,9 +210,9 @@ func TestADFToText(t *testing.T) {
 			want: "kept",
 		},
 		{
-			name: "an inline node with no text contributes nothing",
+			name: "a mention contributes its display text",
 			doc:  `{"type":"mention","attrs":{"id":"abc","text":"@Example User"}}`,
-			want: "",
+			want: "@Example User",
 		},
 		{
 			name: "a text node whose text is not a string is skipped, not fatal",

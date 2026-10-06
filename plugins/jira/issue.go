@@ -10,17 +10,19 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stefanm8/sessh/format"
-	"github.com/stefanm8/sessh/plugin"
 	"github.com/stefanm8/sessh/session"
 )
 
 func issueCommand(j *Jira) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "issue <list|view>",
+		Use:     "issue <command>",
 		Aliases: []string{"issues", "task", "tasks"},
 		Short:   "Issues and their status",
 	}
 	cmd.AddCommand(issueListCommand(j), issueViewCommand(j))
+	cmd.AddCommand(issueReadCommands(j)...)
+	cmd.AddCommand(issueWriteCommands(j)...)
+	cmd.AddCommand(issueMetadataCommands(j)...)
 	return cmd
 }
 
@@ -56,7 +58,7 @@ func BuildJQL(project, status, assignee, rawJQL string) string {
 
 var meRe = regexp.MustCompile(`(?i)^(me|@me|current(user)?)$`)
 
-func escapeJQL(s string) string { return strings.ReplaceAll(s, `"`, `\"`) }
+func escapeJQL(s string) string { return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) }
 
 // StatusColor colors a status by its Jira status category.
 func StatusColor(st Status) string {
@@ -80,6 +82,8 @@ func issueListCommand(j *Jira) *cobra.Command {
 		assignee string
 		rawJQL   string
 		web      bool
+		extra    searchFilters
+		fields   []string
 	)
 	cmd := &cobra.Command{
 		Use:     "list [project]",
@@ -87,28 +91,37 @@ func issueListCommand(j *Jira) *cobra.Command {
 		Short:   "List issues",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimit(limit); err != nil {
+				return err
+			}
+			if web && asJSON {
+				return fmt.Errorf("--web and --json cannot be combined")
+			}
+			if rawJQL == "" && extra.unassigned && assignee != "" {
+				return fmt.Errorf("--unassigned and --assignee cannot be combined")
+			}
 			project := ""
 			if len(args) == 1 {
 				project = args[0]
 			}
 			// Default to "my issues" when nothing bounds the query.
-			if project == "" && rawJQL == "" && status == "" && assignee == "" {
+			if project == "" && rawJQL == "" && status == "" && assignee == "" && extra.empty() {
 				assignee = "me"
 			}
-			jql := BuildJQL(project, status, assignee, rawJQL)
+			jql := buildSearchJQL(project, status, assignee, rawJQL, extra)
 			if web {
 				return format.OpenInBrowser(Site() + "/issues/?jql=" + url.QueryEscape(jql))
 			}
-			return plugin.WithSession(j, func(ctx context.Context, s session.Session, _ *cobra.Command, _ []string) error {
-				issues, raws, err := SearchIssues(ctx, s, jql, limit, nil)
+			return j.withSession(false, func(ctx context.Context, s session.Session, _ *cobra.Command, _ []string) error {
+				issues, raws, err := SearchIssues(ctx, s, jql, limit, issueFields(fields, asJSON, false))
 				if err != nil {
 					return err
 				}
 				if asJSON {
-					return format.PrintJSON(raws)
+					return printJSON(cmd, raws)
 				}
 				if len(issues) == 0 {
-					fmt.Println("No issues match: " + format.Gray(jql))
+					fmt.Fprintln(cmd.OutOrStdout(), "No issues match: "+format.Gray(jql))
 					return nil
 				}
 				rows := make([][]string, 0, len(issues))
@@ -127,18 +140,25 @@ func issueListCommand(j *Jira) *cobra.Command {
 						format.Gray(format.RelativeTime(f.Updated)),
 					})
 				}
-				fmt.Println(format.Table(rows, []string{"key", "summary", "status", "type", "assignee", "updated"}))
-				fmt.Println(format.Gray("\n" + format.Count(len(issues), "issue", "issues")))
+				fmt.Fprintln(cmd.OutOrStdout(), format.Table(rows, []string{"key", "summary", "status", "type", "assignee", "updated"}))
+				fmt.Fprintln(cmd.OutOrStdout(), format.Gray("\n"+format.Count(len(issues), "issue", "issues")))
 				return nil
 			})(cmd, args)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output raw JSON")
-	cmd.Flags().IntVar(&limit, "limit", 0, "cap the number of results")
+	cmd.Flags().IntVar(&limit, "limit", 0, "maximum results (0 for all; default 0)")
 	cmd.Flags().StringVar(&status, "status", "", `filter by status (e.g. "In Progress")`)
 	cmd.Flags().StringVar(&assignee, "assignee", "", `filter by assignee ("me" for yourself)`)
-	cmd.Flags().StringVar(&rawJQL, "jql", "", "raw JQL (overrides project/status/assignee)")
+	cmd.Flags().StringVar(&rawJQL, "jql", "", "raw JQL and ordering (overrides all generated filters)")
 	cmd.Flags().BoolVar(&web, "web", false, "open the search in your default browser instead")
+	cmd.Flags().StringVar(&extra.issueType, "type", "", "filter by issue type")
+	cmd.Flags().StringVar(&extra.priority, "priority", "", "filter by priority")
+	cmd.Flags().StringVar(&extra.label, "label", "", "filter by label")
+	cmd.Flags().StringVar(&extra.reporter, "reporter", "", "filter by reporter (me for yourself)")
+	cmd.Flags().StringVar(&extra.text, "text", "", "Jira text-search expression")
+	cmd.Flags().BoolVar(&extra.unassigned, "unassigned", false, "filter issues without an assignee")
+	cmd.Flags().StringSliceVar(&fields, "fields", nil, "comma-separated field IDs; custom fields preserved in JSON")
 	return cmd
 }
 
@@ -146,6 +166,7 @@ func issueViewCommand(j *Jira) *cobra.Command {
 	var (
 		asJSON bool
 		web    bool
+		fields []string
 	)
 	cmd := &cobra.Command{
 		Use:     "view <KEY-123>",
@@ -154,19 +175,25 @@ func issueViewCommand(j *Jira) *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key := args[0]
-			if web {
-				return format.OpenInBrowser(Site() + "/browse/" + key)
+			if err := validateIdentifier(key, "issue key"); err != nil {
+				return err
 			}
-			return plugin.WithSession(j, func(ctx context.Context, s session.Session, _ *cobra.Command, _ []string) error {
-				it, raw, err := GetIssue(ctx, s, key)
+			if web && asJSON {
+				return fmt.Errorf("--web and --json cannot be combined")
+			}
+			if web {
+				return format.OpenInBrowser(Site() + "/browse/" + url.PathEscape(key))
+			}
+			return j.withSession(false, func(ctx context.Context, s session.Session, _ *cobra.Command, _ []string) error {
+				it, raw, err := GetIssueFields(ctx, s, key, issueFields(fields, asJSON, true))
 				if err != nil {
 					return err
 				}
 				if asJSON {
-					return format.PrintJSON(raw)
+					return printJSON(cmd, raw)
 				}
 				f := it.Fields
-				fmt.Println(format.Bold(it.Key + "  " + f.Summary))
+				fmt.Fprintln(cmd.OutOrStdout(), format.Bold(it.Key+"  "+f.Summary))
 				who := "Unassigned"
 				if f.Assignee != nil && f.Assignee.DisplayName != "" {
 					who = f.Assignee.DisplayName
@@ -175,34 +202,35 @@ func issueViewCommand(j *Jira) *cobra.Command {
 				if kind == "" {
 					kind = "Issue"
 				}
-				fmt.Println(StatusColor(f.Status) + format.Gray(fmt.Sprintf(" • %s • %s • updated %s",
+				fmt.Fprintln(cmd.OutOrStdout(), StatusColor(f.Status)+format.Gray(fmt.Sprintf(" • %s • %s • updated %s",
 					kind, who, format.RelativeTime(f.Updated))))
-				fmt.Println()
+				fmt.Fprintln(cmd.OutOrStdout())
 				if desc := text(f.Description); desc != "" {
-					fmt.Println(desc)
-					fmt.Println()
+					fmt.Fprintln(cmd.OutOrStdout(), desc)
+					fmt.Fprintln(cmd.OutOrStdout())
 				}
-				format.Line("Priority", f.Priority.Name, 10)
+				printLine(cmd, "Priority", f.Priority.Name, 10)
 				if f.Reporter != nil {
-					format.Line("Reporter", f.Reporter.DisplayName, 10)
+					printLine(cmd, "Reporter", f.Reporter.DisplayName, 10)
 				}
 				if f.Parent != nil {
 					parent := f.Parent.Key
 					if f.Parent.Fields.Summary != "" {
 						parent += " – " + f.Parent.Fields.Summary
 					}
-					format.Line("Parent", parent, 10)
+					printLine(cmd, "Parent", parent, 10)
 				}
 				if len(f.Labels) > 0 {
-					format.Line("Labels", strings.Join(f.Labels, ", "), 10)
+					printLine(cmd, "Labels", strings.Join(f.Labels, ", "), 10)
 				}
-				format.Line("Created", format.RelativeTime(f.Created), 10)
-				format.Line("URL", Site()+"/browse/"+it.Key, 10)
+				printLine(cmd, "Created", format.RelativeTime(f.Created), 10)
+				printLine(cmd, "URL", Site()+"/browse/"+it.Key, 10)
 				return nil
 			})(cmd, args)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "output raw JSON")
 	cmd.Flags().BoolVar(&web, "web", false, "open the issue in your default browser instead")
+	cmd.Flags().StringSliceVar(&fields, "fields", nil, "comma-separated field IDs; custom fields preserved in JSON")
 	return cmd
 }

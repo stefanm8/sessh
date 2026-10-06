@@ -200,7 +200,7 @@ func (s Spec) Start(ctx context.Context, args []string) (Status, bool, error) {
 	// Do not replace logs or spawn a duplicate if a worker is still cleaning up.
 	worker, err := lock(s.path("lock"))
 	if err != nil {
-		return Status{}, false, fmt.Errorf("%s is busy; retry status shortly", s.Name)
+		return Status{}, false, fmt.Errorf("%s is busy; retry status shortly: %w", s.Name, err)
 	}
 	worker.Close()
 	executable, err := os.Executable()

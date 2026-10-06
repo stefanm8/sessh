@@ -165,9 +165,10 @@ func ResolveAgainst(origin, path string) string {
 	return base + "/" + path
 }
 
-// looksLikeLogin reports whether a URL is one of the Atlassian/Microsoft login
-// origins we get bounced to when a session lapses.
-func looksLikeLogin(rawurl string) bool {
+// IsLoginURL reports whether a URL points to an Atlassian/Microsoft login
+// origin or a sign-in page. Verification can stop polling an anonymous API
+// once navigation has reached a page that requires the user to sign in.
+func IsLoginURL(rawurl string) bool {
 	u, err := url.Parse(rawurl)
 	if err != nil {
 		return false

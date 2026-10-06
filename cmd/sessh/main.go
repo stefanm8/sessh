@@ -70,7 +70,8 @@ plugins that name the same profile share one login (bitbucket, jira and
 confluence are all one Atlassian account). Log in once with ` + format.Bold("sessh auth login") + `;
 every other command runs headless against the saved session. When a session
 has lapsed, the command opens a browser window, waits for you to log in, and
-then continues (--no-login reports the error instead).`,
+then continues (--no-login reports the error instead). The browser stays warm
+for 30 minutes after its last request; later commands reuse its open tabs.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
@@ -81,6 +82,8 @@ then continues (--no-login reports the error instead).`,
 	pf.StringVar(&flags.From, "from", "", "when creating a profile, seed it from this one instead of `default`")
 	pf.BoolVar(&flags.NoInherit, "no-inherit", false, "when creating a profile, start it empty")
 	pf.BoolVar(&flags.NoLogin, "no-login", false, "fail instead of opening a login window when the session has lapsed")
+	pf.BoolVar(&flags.NoKeepAlive, "no-keep-alive", false, "do not automatically keep a browser running after this command")
+	pf.StringVar(&flags.KeepAlive, "keep-alive", "", "browser idle duration (default 30m, or SESSH_KEEP_ALIVE; 0 = indefinite, off = disabled)")
 	pf.Bool("login", false, "")
 	_ = pf.MarkDeprecated("login", "a lapsed session opens a login window by default")
 	pf.BoolVar(&flags.Verbose, "verbose", false, "print session bookkeeping to stderr")

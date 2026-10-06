@@ -54,7 +54,7 @@ func newEnv(t *testing.T, jira, confluence *tenant) *env {
 		t.Fatal(err)
 	}
 	e := &env{t: t, home: home}
-	e.vars = append(os.Environ(), "SESSH_HOME="+home, "SESSH_PROFILE=", "BITBUCKET_WORKSPACE=", "JIRA_SITE=", "CONFLUENCE_SITE=")
+	e.vars = append(os.Environ(), "SESSH_HOME="+home, "SESSH_PROFILE=", "SESSH_KEEP_ALIVE=", "BITBUCKET_WORKSPACE=", "JIRA_SITE=", "CONFLUENCE_SITE=")
 	if jira != nil {
 		e.vars = append(e.vars, "JIRA_SITE="+jira.URL())
 	}
@@ -62,7 +62,7 @@ func newEnv(t *testing.T, jira, confluence *tenant) *env {
 		e.vars = append(e.vars, "CONFLUENCE_SITE="+confluence.URL())
 	}
 	t.Cleanup(func() {
-		_ = e.start("daemon", "stop", "jira").wait(30 * time.Second)
+		e.stopWorkers()
 		os.RemoveAll(home)
 	})
 	return e
@@ -191,6 +191,12 @@ func TestLapsedSession(t *testing.T) {
 				c.running(), c.stdout.String(), jira.headedLogins())
 		}
 		jira.approve()
+		if c.wait(time.Minute) == -2 {
+			jira.mu.Lock()
+			approved, polls, sessions, myself := jira.approved, jira.polls, len(jira.sessions), jira.myself
+			jira.mu.Unlock()
+			t.Fatalf("approved login did not finish: approved=%v polls=%d sessions=%d identity probes=%d\nstderr:\n%s", approved, polls, sessions, myself, c.stderr.String())
+		}
 		c.expect(0, `"key": "DEMO"`, "Logged in as E2E User")
 		var projects []map[string]any
 		if err := json.Unmarshal([]byte(c.stdout.String()), &projects); err != nil {
@@ -235,7 +241,7 @@ func TestConcurrentCommandsShareOneLogin(t *testing.T) {
 	waitFor(t, "a login window opens", 90*time.Second, func() bool { return jira.headedLogins() >= 1 })
 	time.Sleep(5 * time.Second)
 	if n := jira.headedLogins(); n != 1 || !a.running() || !b.running() {
-		t.Fatalf("%d login windows; running %v %v; want one window and both waiting", n, a.running(), b.running())
+		t.Fatalf("%d login windows; running %v %v; want one window and both waiting\nfirst stderr:\n%s\nsecond stderr:\n%s", n, a.running(), b.running(), a.stderr.String(), b.stderr.String())
 	}
 	jira.approve()
 	a.expect(0, "DEMO", "")

@@ -27,6 +27,7 @@ type tenant struct {
 	srv     *httptest.Server
 	host    string
 	product string
+	mux     *http.ServeMux
 
 	mu       sync.Mutex
 	approved bool
@@ -34,6 +35,8 @@ type tenant struct {
 	search   string // project search: ok, forbid, or revoke-once
 	headed   int    // login form loads by a headed browser
 	headless int
+	myself   int // identity API calls, to catch duplicate warm-command probes
+	polls    int // login-form approval polls, for timeout diagnostics
 }
 
 const sessionCookie = "tenant.session.token"
@@ -45,6 +48,7 @@ func newTenant(t *testing.T, product, host string) *tenant {
 	t.Helper()
 	tn := &tenant{host: host, product: product, sessions: map[string]bool{}, search: "ok"}
 	mux := http.NewServeMux()
+	tn.mux = mux
 	home := "/jira/"
 	if product == "confluence" {
 		home = "/wiki/"
@@ -91,6 +95,7 @@ const headed = %t, cont = %q;
 	mux.HandleFunc("/_e2e/approved", func(w http.ResponseWriter, r *http.Request) {
 		tn.mu.Lock()
 		defer tn.mu.Unlock()
+		tn.polls++
 		writeJSON(w, http.StatusOK, map[string]bool{"approved": tn.approved})
 	})
 
@@ -120,6 +125,9 @@ func (tn *tenant) valid(r *http.Request) bool {
 
 func (tn *tenant) jira(mux *http.ServeMux) {
 	mux.HandleFunc("/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
+		tn.mu.Lock()
+		tn.myself++
+		tn.mu.Unlock()
 		if !tn.valid(r) {
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"errorMessages": []string{"You are not authenticated."}})
 			return
@@ -202,6 +210,12 @@ func (tn *tenant) headedLogins() int {
 	tn.mu.Lock()
 	defer tn.mu.Unlock()
 	return tn.headed
+}
+
+func (tn *tenant) identityRequests() int {
+	tn.mu.Lock()
+	defer tn.mu.Unlock()
+	return tn.myself
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

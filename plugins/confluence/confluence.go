@@ -48,6 +48,7 @@ func (c *Confluence) Profile() session.Profile {
 
 func verify(ctx context.Context, s session.Session) error {
 	if id, err := whoami(ctx, s); err == nil && id.AccountID != "" {
+		session.RememberIdentity(s, id)
 		return nil
 	}
 	if _, err := s.Navigate(ctx, Wiki()+"/"); err != nil {
@@ -61,6 +62,7 @@ func verify(ctx context.Context, s session.Session) error {
 		case <-time.After(1500 * time.Millisecond):
 		}
 		if id, err := whoami(ctx, s); err == nil && id.AccountID != "" {
+			session.RememberIdentity(s, id)
 			return nil
 		}
 	}

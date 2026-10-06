@@ -18,7 +18,7 @@ type AuthError struct {
 	Detail  string
 	// Status and URL identify the response that reported the failure: 401 or
 	// 403, or 0 for a redirect to a login page. Both are empty when a Verify
-	// hook or the transport reported it.
+	// hook reported it.
 	Status int
 	URL    string
 }

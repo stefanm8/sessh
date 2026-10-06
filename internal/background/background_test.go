@@ -169,3 +169,23 @@ func TestStartupFailureIsRecorded(t *testing.T) {
 		t.Fatalf("status = %+v, live %v; want the failure recorded", st, live)
 	}
 }
+
+func TestStartPreservesContendedLockCause(t *testing.T) {
+	for _, ext := range []string{"lock", "start-lock"} {
+		t.Run(ext, func(t *testing.T) {
+			s := testSpec(t)
+			guard, err := lock(s.path(ext))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer guard.Close()
+			_, _, err = s.Start(context.Background(), nil)
+			if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+				t.Fatalf("start = %v; want retryable lock contention", err)
+			}
+			if _, err := os.Stat(s.LogPath()); !os.IsNotExist(err) {
+				t.Fatalf("contended start replaced log or spawned worker: %v", err)
+			}
+		})
+	}
+}

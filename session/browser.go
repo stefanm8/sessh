@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -28,15 +29,25 @@ type browserSession struct {
 	page    playwright.Page
 	profile Profile
 
-	mu      sync.Mutex
-	primed  bool // page has been navigated to the origin at least once
-	ident   Identity
-	hasIdnt bool
+	mu       sync.Mutex
+	primed   bool // page has been navigated to the origin at least once
+	ident    Identity
+	hasIdnt  bool
+	unusable bool // a cancelled navigation may still be running; do not pool its page
 }
 
 var _ Session = (*browserSession)(nil)
 
-func (s *browserSession) Do(_ context.Context, req *http.Request) (*http.Response, error) {
+func (s *browserSession) Do(ctx context.Context, req *http.Request) (*http.Response, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := req.Context().Err(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(req.Context(), cancel)
+	defer func() { stop(); cancel() }()
 	url := ResolveAgainst(s.profile.Origin, req.URL.String())
 
 	headers := map[string]string{}
@@ -51,7 +62,8 @@ func (s *browserSession) Do(_ context.Context, req *http.Request) (*http.Respons
 		Method:           playwright.String(req.Method),
 		Headers:          headers,
 		FailOnStatusCode: playwright.Bool(false),
-		Timeout:          playwright.Float(60000),
+		Timeout:          playwright.Float(requestTimeout(ctx, req.Context())),
+		MaxRetries:       playwright.Int(0),
 	}
 	if req.Body != nil {
 		body, err := io.ReadAll(req.Body)
@@ -63,14 +75,35 @@ func (s *browserSession) Do(_ context.Context, req *http.Request) (*http.Respons
 		}
 	}
 
-	res, err := s.ctxt.Request().Fetch(url, opts)
-	if err != nil {
-		// Transport-level failure: offline, DNS, or redirected somewhere we
-		// cannot follow. From a CLI's point of view that is indistinguishable
-		// from a lapsed session, and the advice is the same.
-		return nil, Authf(s.profile.Name, "could not reach %s (%v). Try: sessh auth login --profile %s",
-			s.profile.Origin, err, s.profile.Name)
+	type result struct {
+		response playwright.APIResponse
+		err      error
 	}
+	done := make(chan result)
+	go func() {
+		res, err := s.ctxt.Request().Fetch(url, opts)
+		select {
+		case done <- result{res, err}:
+		case <-ctx.Done():
+			if res != nil {
+				_ = res.Dispose()
+			}
+		}
+	}()
+	var res playwright.APIResponse
+	var err error
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-done:
+		res, err = r.response, r.err
+	}
+	if err != nil {
+		// A transport failure is not proof of a lapsed session. In particular,
+		// a write may have succeeded before its response was lost.
+		return nil, fmt.Errorf("request to %s failed: %w", s.profile.Origin, err)
+	}
+	defer res.Dispose()
 	body, err := res.Body()
 	if err != nil {
 		return nil, err
@@ -83,7 +116,7 @@ func (s *browserSession) Do(_ context.Context, req *http.Request) (*http.Respons
 			"not authenticated (HTTP %d) for %s. Run: sessh auth login --profile %s",
 			status, s.profile.Origin, s.profile.Name)}
 	}
-	if looksLikeLogin(finalURL) {
+	if IsLoginURL(finalURL) {
 		return nil, &AuthError{Profile: s.profile.Name, URL: url, Detail: fmt.Sprintf(
 			"session expired (redirected to %s). Run: sessh auth login --profile %s",
 			finalURL, s.profile.Name)}
@@ -107,6 +140,23 @@ func (s *browserSession) Do(_ context.Context, req *http.Request) (*http.Respons
 	}, nil
 }
 
+// requestTimeout bounds Playwright's request by either caller's deadline.
+// Playwright uses milliseconds and interprets zero as no timeout.
+func requestTimeout(contexts ...context.Context) float64 {
+	timeout := time.Minute
+	for _, ctx := range contexts {
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining < timeout {
+				timeout = remaining
+			}
+		}
+	}
+	if timeout < time.Millisecond {
+		timeout = time.Millisecond
+	}
+	return float64(timeout) / float64(time.Millisecond)
+}
+
 func (s *browserSession) GetJSON(ctx context.Context, path string, out any) error {
 	raw, err := Get(ctx, s, path)
 	if err != nil {
@@ -125,9 +175,42 @@ func (s *browserSession) GetJSON(ctx context.Context, path string, out any) erro
 }
 
 func (s *browserSession) Eval(ctx context.Context, js string, arg, out any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := s.prime(ctx); err != nil {
 		return err
 	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result)
+	go func() {
+		data, err := s.evaluate(ctx, js, arg)
+		select {
+		case done <- result{data, err}:
+		case <-ctx.Done():
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		s.mu.Lock()
+		s.unusable = true
+		s.mu.Unlock()
+		return ctx.Err()
+	case res := <-done:
+		if res.err != nil {
+			return res.err
+		}
+		if out == nil {
+			return nil
+		}
+		return json.Unmarshal(res.data, out)
+	}
+}
+
+func (s *browserSession) evaluate(ctx context.Context, js string, arg any) ([]byte, error) {
 	var args []any
 	if arg != nil {
 		args = append(args, arg)
@@ -137,26 +220,23 @@ func (s *browserSession) Eval(ctx context.Context, js string, arg, out any) erro
 	// and retry once before reporting failure.
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		res, err := s.page.Evaluate(js, args...)
 		if err == nil {
-			if out == nil {
-				return nil
-			}
-			b, err := json.Marshal(res)
-			if err != nil {
-				return err
-			}
-			return json.Unmarshal(b, out)
+			return json.Marshal(res)
 		}
 		lastErr = err
 		if !isContextDestroyed(err) {
 			break
 		}
 		_ = s.page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-			State: playwright.LoadStateDomcontentloaded,
+			State:   playwright.LoadStateDomcontentloaded,
+			Timeout: playwright.Float(requestTimeout(ctx)),
 		})
 	}
-	return lastErr
+	return nil, lastErr
 }
 
 func isContextDestroyed(err error) bool {
@@ -165,15 +245,30 @@ func isContextDestroyed(err error) bool {
 		strings.Contains(msg, "navigating and changing")
 }
 
-func (s *browserSession) Navigate(_ context.Context, rawurl string) (string, error) {
+func (s *browserSession) Navigate(ctx context.Context, rawurl string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	url := ResolveAgainst(s.profile.Origin, rawurl)
 	// A navigation that fails still usually leaves the page somewhere useful
 	// (an SSO bounce, say), so report where we ended up. Either way the page
 	// has been pointed somewhere on purpose, and a later Eval must not move it.
-	_, _ = s.page.Goto(url, playwright.PageGotoOptions{
-		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
-		Timeout:   playwright.Float(60000),
-	})
+	done := make(chan struct{})
+	go func() {
+		_, _ = s.page.Goto(url, playwright.PageGotoOptions{
+			WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+			Timeout:   playwright.Float(requestTimeout(ctx)),
+		})
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		s.mu.Lock()
+		s.unusable = true
+		s.mu.Unlock()
+		return "", ctx.Err()
+	case <-done:
+	}
 	s.mu.Lock()
 	s.primed = true
 	s.mu.Unlock()
@@ -226,10 +321,35 @@ func (s *browserSession) Whoami(ctx context.Context) (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
+	s.RememberIdentity(id)
+	return id, nil
+}
+
+func (s *browserSession) RememberIdentity(id Identity) {
+	if id.Empty() {
+		return
+	}
 	s.mu.Lock()
 	s.ident, s.hasIdnt = id, true
 	s.mu.Unlock()
-	return id, nil
+}
+
+// pageOrigin compares actual browser origins, ignoring paths and spelling
+// differences that do not change an HTTP origin.
+func pageOrigin(rawurl string) string {
+	u, err := url.Parse(rawurl)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	host := strings.ToLower(u.Host)
+	if scheme == "http" && u.Port() == "80" || scheme == "https" && u.Port() == "443" {
+		host = strings.TrimSuffix(host, ":"+u.Port())
+	}
+	return scheme + "://" + host
 }
 
 // prime makes sure the page actually sits on the profile's origin before we
@@ -250,13 +370,12 @@ func (s *browserSession) prime(ctx context.Context) error {
 // its own. The manager hands these to socket clients so that a command routed
 // through a long-running holder cannot navigate the holder's page out from
 // under it — a `sessh teams capture` must keep the page it is scrolling.
-func (s *browserSession) fork() (*browserSession, func(), error) {
+func (s *browserSession) fork(origin string) (*browserSession, error) {
 	page, err := s.ctxt.NewPage()
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return &browserSession{ctxt: s.ctxt, page: page, profile: s.profile},
-		func() { _ = page.Close() }, nil
+	return &browserSession{ctxt: s.ctxt, page: page, profile: Profile{Name: s.profile.Name, Origin: origin}}, nil
 }
 
 // StorageState exports the profile's cookies and localStorage — the seed a

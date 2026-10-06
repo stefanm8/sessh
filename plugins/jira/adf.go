@@ -36,6 +36,27 @@ func writeADF(b *strings.Builder, node any) {
 				inner.WriteString(t)
 			}
 		}
+		attrs, _ := n["attrs"].(map[string]any)
+		switch typ {
+		case "mention":
+			if v, ok := attrs["text"].(string); ok {
+				inner.WriteString(v)
+			} else if v, ok := attrs["id"].(string); ok {
+				inner.WriteString("@" + v)
+			}
+		case "emoji":
+			if v, ok := attrs["text"].(string); ok {
+				inner.WriteString(v)
+			} else if v, ok := attrs["shortName"].(string); ok {
+				inner.WriteString(v)
+			}
+		case "inlineCard", "blockCard", "embedCard":
+			if v, ok := attrs["url"].(string); ok {
+				inner.WriteString(v)
+			}
+		case "rule":
+			inner.WriteString("---\n")
+		}
 		if typ == "hardBreak" {
 			inner.WriteString("\n")
 		}
@@ -43,6 +64,28 @@ func writeADF(b *strings.Builder, node any) {
 			writeADF(&inner, content)
 		}
 		s := inner.String()
+		if typ == "text" {
+			if marks, ok := n["marks"].([]any); ok {
+				for _, mark := range marks {
+					m, ok := mark.(map[string]any)
+					if !ok || m["type"] != "link" {
+						continue
+					}
+					a, _ := m["attrs"].(map[string]any)
+					href, _ := a["href"].(string)
+					if href != "" && href != s {
+						s += " (" + href + ")"
+					}
+				}
+			}
+		}
+		if typ == "tableCell" || typ == "tableHeader" {
+			s = strings.TrimSpace(s) + "\t"
+		}
+		if typ == "tableRow" {
+			s = strings.TrimRight(s, "\t") + "\n"
+		}
+
 		if typ == "listItem" {
 			s = "- " + s
 		}

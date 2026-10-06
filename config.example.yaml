@@ -2,6 +2,8 @@
 # Replace these examples with your own values; omit services you do not use.
 # your-workspace and your-tenant are placeholders, not shared service accounts.
 # Jira and Confluence use the site origin only, without /jira or /wiki.
+# Browser commands stay warm for 30m. Set SESSH_KEEP_ALIVE=10m (or off) in
+# your shell to change the default; --keep-alive overrides it per command.
 plugins:
   bitbucket:
     workspace: your-workspace

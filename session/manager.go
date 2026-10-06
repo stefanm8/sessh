@@ -57,6 +57,64 @@ func (h *Handle) Close() {
 	})
 }
 
+// ErrUnavailable means there is no reachable shared session for a profile.
+// Connect never launches Chromium or creates a profile when this is returned.
+var ErrUnavailable = errors.New("no shared session is available")
+
+// Connect joins an existing headless session without acquiring its lock or
+// preparing its profile. Authentication and cancellation errors are returned
+// unchanged, so callers must not mistake them for a missing daemon.
+func Connect(ctx context.Context, p Profile, opts AcquireOptions) (*Handle, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if opts.Headed {
+		return nil, fmt.Errorf("a headed session cannot connect to a shared browser")
+	}
+	if p.Name == "" {
+		p.Name = DefaultProfile
+	}
+	cl, err := dialProfileContext(ctx, p.Name)
+	if ctxErr := acquireContextError(ctx); ctxErr != nil {
+		if cl != nil {
+			_ = cl.Close()
+		}
+		return nil, ctxErr
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w for profile %q: %v", ErrUnavailable, p.Name, err)
+	}
+	return routedHandle(ctx, p, opts, cl)
+}
+
+// A socket deadline can wake just before the context timer publishes Err.
+// Preserve the caller's deadline instead of mistaking this for a missing
+// daemon and starting another browser.
+func acquireContextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func routedHandle(ctx context.Context, p Profile, opts AcquireOptions, cl *rpcClient) (*Handle, error) {
+	cl.profile = p
+	h := &Handle{Session: cl, Profile: p, Routed: true, closers: []func(){func() { _ = cl.Close() }}}
+	if opts.Notify != nil {
+		opts.Notify(fmt.Sprintf("routed through the process holding profile %q", p.Name))
+	}
+	if !opts.SkipVerify {
+		if err := verify(ctx, p, cl); err != nil {
+			h.Close()
+			return nil, err
+		}
+	}
+	return h, nil
+}
+
 // Acquire resolves a profile to a usable Session.
 //
 //   - lock acquired → launch the browser in this process (and, if asked, serve
@@ -78,50 +136,12 @@ func Acquire(ctx context.Context, p Profile, opts AcquireOptions) (*Handle, erro
 		notify(note)
 	}
 
-	// Someone may already be holding this profile with a socket up. Prefer it:
-	// it is warm, and it is the only way to share a single-process profile.
-	if !opts.Headed {
-		if cl, err := dialProfile(p.Name); err == nil {
-			cl.profile = p
-			h := &Handle{Session: cl, Profile: p, Routed: true, closers: []func(){func() { _ = cl.Close() }}}
-			notify(fmt.Sprintf("routed through the process holding profile %q", p.Name))
-			if !opts.SkipVerify {
-				if err := verify(ctx, p, cl); err != nil {
-					h.Close()
-					return nil, err
-				}
-			}
-			return h, nil
-		}
-	}
-
-	lock, err := acquireLock(p.Name)
+	lock, cl, err := acquireProfile(ctx, p.Name, opts.Headed)
 	if err != nil {
-		var busy *ErrBusy
-		if errors.As(err, &busy) {
-			if opts.Headed {
-				return nil, fmt.Errorf(
-					"%w.\nA headed login needs the profile to itself — Chromium cannot open a window in an\n"+
-						"already-running headless context. Stop the holder and retry, or use --profile <name>", err)
-			}
-			// The holder may still be starting its socket; give it a moment.
-			for i := 0; i < 20; i++ {
-				time.Sleep(150 * time.Millisecond)
-				if cl, derr := dialProfile(p.Name); derr == nil {
-					cl.profile = p
-					h := &Handle{Session: cl, Profile: p, Routed: true, closers: []func(){func() { _ = cl.Close() }}}
-					if !opts.SkipVerify {
-						if verr := verify(ctx, p, cl); verr != nil {
-							h.Close()
-							return nil, verr
-						}
-					}
-					return h, nil
-				}
-			}
-			return nil, fmt.Errorf("%w.\nIt is not serving a session socket, so this command cannot share it", err)
-		}
 		return nil, err
+	}
+	if cl != nil {
+		return routedHandle(ctx, p, opts, cl)
 	}
 
 	s, closer, err := launch(p, launchOptions{Headed: opts.Headed})
@@ -152,6 +172,46 @@ func Acquire(ctx context.Context, p Profile, opts AcquireOptions) (*Handle, erro
 	return h, nil
 }
 
+// acquireProfile either connects to a warm session or owns the profile lock.
+// A busy holder can start serving OR finish during the wait, so retry both
+// the socket and the lock. Polling only the socket misses short-lived commands.
+func acquireProfile(ctx context.Context, name string, headed bool) (*profileLock, *rpcClient, error) {
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		if !headed {
+			if cl, err := dialProfileContext(ctx, name); err == nil {
+				return nil, cl, nil
+			}
+			if err := acquireContextError(ctx); err != nil {
+				return nil, nil, err
+			}
+		}
+		lock, err := acquireLock(name)
+		if err == nil {
+			return lock, nil, nil
+		}
+		var busy *ErrBusy
+		if !errors.As(err, &busy) {
+			return nil, nil, err
+		}
+		if headed {
+			return nil, nil, fmt.Errorf(
+				"%w.\nA headed login needs the profile to itself — Chromium cannot open a window in an\n"+
+					"already-running headless context. Stop the holder and retry, or use --profile <name>", err)
+		}
+		if attempt == 20 {
+			return nil, nil, fmt.Errorf("%w.\nIt is not serving a session socket, so this command cannot share it", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+}
+
 func verify(ctx context.Context, p Profile, s Session) error {
 	if p.Verify == nil {
 		return nil
@@ -172,14 +232,15 @@ func Forget(name string) error {
 	if name == "" {
 		return fmt.Errorf("no profile named")
 	}
-	if _, err := dialProfile(name); err == nil {
+	if cl, err := dialProfile(name); err == nil {
+		_ = cl.Close()
 		return fmt.Errorf("profile %q is in use by a running sessh process; stop it first", name)
 	}
 	lock, err := acquireLock(name)
 	if err != nil {
 		return err
 	}
-	lock.Release()
+	defer lock.Release()
 	return os.RemoveAll(ProfileDir(name))
 }
 

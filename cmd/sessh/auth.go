@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/stefanm8/sessh/format"
+	"github.com/stefanm8/sessh/internal/background"
 	"github.com/stefanm8/sessh/plugin"
 	"github.com/stefanm8/sessh/session"
 )
@@ -82,7 +83,7 @@ Other commands open the same window when they find the session lapsed.`,
 				name = plugin.ProfileFor(owner).Name
 			}
 			shared := plugin.SharingProfile(name, "")
-			if err := session.Forget(name); err != nil {
+			if err := forgetProfile(cmd.Context(), name); err != nil {
 				return err
 			}
 			fmt.Printf("%s Logged out of profile %s (local session cleared).\n",
@@ -101,7 +102,9 @@ Other commands open the same window when they find the session lapsed.`,
 logged in with. Close the source browser and back up its profile first.
 
 Only credentials are copied (cookies and localStorage), never IndexedDB or
-caches. Chromium opens the source to read it and may update browser metadata.`,
+caches. Chromium opens the source to read it and may update browser metadata.
+Import overlays the target's saved credentials. When switching accounts,
+log out of the target first, then import from a separate source profile.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			into, _ := cmd.Flags().GetString("into")
@@ -116,7 +119,7 @@ caches. Chromium opens the source to read it and may update browser metadata.`,
 			if err != nil {
 				return err
 			}
-			if err := session.ImportProfile(into, src); err != nil {
+			if err := changeProfile(cmd.Context(), into, func() error { return session.ImportProfile(into, src) }); err != nil {
 				return err
 			}
 			fmt.Printf("%s Imported the session from %s into profile %s\n",
@@ -138,6 +141,38 @@ caches. Chromium opens the source to read it and may update browser metadata.`,
 	})
 
 	return auth
+}
+
+func forgetProfile(ctx context.Context, name string) error {
+	return changeProfile(ctx, name, func() error { return session.Forget(name) })
+}
+
+// Logout and import may close the detached browser that normal commands keep
+// warm. The login lock keeps concurrent automatic starts out of the gap before
+// changing credentials. Each operation also takes the profile lock, so active
+// foreground commands and captures remain protected.
+func changeProfile(ctx context.Context, name string, change func() error) error {
+	release, _, err := session.LockLogin(ctx, name, nil)
+	if err != nil {
+		return err
+	}
+	defer release()
+	spec := background.Spec{Dir: session.RunDir(), Key: "daemon:" + name, Name: "daemon (profile " + name + ")"}
+	st, live, err := spec.Inspect(ctx)
+	if err != nil {
+		return err
+	}
+	if live && st.Detached {
+		stopCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if _, err := spec.Stop(stopCtx); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return change()
 }
 
 // resolvePluginArg turns an optional plugin name into a plugin. With no

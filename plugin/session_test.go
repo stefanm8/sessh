@@ -166,6 +166,45 @@ func TestRunSessionWaitsForAnotherLogin(t *testing.T) {
 	}
 }
 
+func TestRunSessionWaitsForLoginAfterOwnRecovery(t *testing.T) {
+	s := &seams{acquireErrs: []error{session.Authf("test", "expired"), &session.ErrBusy{Profile: "test"}}}
+	stubSeams(t, s)
+	reloginFn = func(ctx context.Context, _ Plugin, _ error) error {
+		// A second caller acquires the login lock after our window closes to
+		// confirm that it has been signed in too.
+		release, _, err := session.LockLogin(ctx, "test", nil)
+		if err != nil {
+			return err
+		}
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			release()
+		}()
+		return nil
+	}
+	runs := 0
+	err := runSession(context.Background(), &testPlugin{}, func(context.Context, session.Session) error {
+		runs++
+		return nil
+	})
+	if err != nil || runs != 1 {
+		t.Fatalf("error=%v runs=%d; want successful command after waiting", err, runs)
+	}
+}
+
+func TestRunSessionRetriesLoginThatAlreadyFinished(t *testing.T) {
+	s := &seams{acquireErrs: []error{loginBusy("test")}}
+	stubSeams(t, s)
+	runs := 0
+	err := runSession(context.Background(), &testPlugin{}, func(context.Context, session.Session) error {
+		runs++
+		return nil
+	})
+	if err != nil || runs != 1 || len(s.logins) != 0 {
+		t.Fatalf("error=%v runs=%d logins=%d; want one run without a new login", err, runs, len(s.logins))
+	}
+}
+
 func TestNoWindowWithoutADisplay(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("only Linux can lack a display")

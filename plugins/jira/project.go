@@ -3,11 +3,11 @@ package jira
 import (
 	"context"
 	"fmt"
+	"net/url"
 
 	"github.com/spf13/cobra"
 
 	"github.com/stefanm8/sessh/format"
-	"github.com/stefanm8/sessh/plugin"
 	"github.com/stefanm8/sessh/session"
 )
 
@@ -29,19 +29,25 @@ func projectCommand(j *Jira) *cobra.Command {
 		Short:   "List all projects",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateLimit(limit); err != nil {
+				return err
+			}
+			if web && asJSON {
+				return fmt.Errorf("--web and --json cannot be combined")
+			}
 			if web {
 				return format.OpenInBrowser(Site() + "/jira/projects?page=1&sortKey=name&sortOrder=ASC")
 			}
-			return plugin.WithSession(j, func(ctx context.Context, s session.Session, _ *cobra.Command, _ []string) error {
+			return j.withSession(false, func(ctx context.Context, s session.Session, _ *cobra.Command, _ []string) error {
 				projects, raws, err := ListProjects(ctx, s, limit)
 				if err != nil {
 					return err
 				}
 				if asJSON {
-					return format.PrintJSON(raws)
+					return printJSON(cmd, raws)
 				}
 				if len(projects) == 0 {
-					fmt.Println("No projects found (or not authenticated — try: sessh auth login jira).")
+					fmt.Fprintln(cmd.OutOrStdout(), "No projects found (or not authenticated — try: sessh auth login jira).")
 					return nil
 				}
 				rows := make([][]string, 0, len(projects))
@@ -53,14 +59,14 @@ func projectCommand(j *Jira) *cobra.Command {
 						format.Gray(p.Lead.DisplayName),
 					})
 				}
-				fmt.Println(format.Table(rows, []string{"key", "name", "type", "lead"}))
-				fmt.Println(format.Gray("\n" + format.Count(len(projects), "project", "projects")))
+				fmt.Fprintln(cmd.OutOrStdout(), format.Table(rows, []string{"key", "name", "type", "lead"}))
+				fmt.Fprintln(cmd.OutOrStdout(), format.Gray("\n"+format.Count(len(projects), "project", "projects")))
 				return nil
 			})(cmd, args)
 		},
 	}
 	list.Flags().BoolVar(&asJSON, "json", false, "output raw JSON")
-	list.Flags().IntVar(&limit, "limit", 0, "cap the number of results")
+	list.Flags().IntVar(&limit, "limit", 0, "maximum results (0 for all; default 0)")
 	list.Flags().BoolVar(&web, "web", false, "open the projects page in your default browser instead")
 
 	var (
@@ -74,26 +80,32 @@ func projectCommand(j *Jira) *cobra.Command {
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			key := args[0]
-			if viewWeb {
-				return format.OpenInBrowser(Site() + "/jira/software/projects/" + key + "/boards")
+			if err := validateIdentifier(key, "project key"); err != nil {
+				return err
 			}
-			return plugin.WithSession(j, func(ctx context.Context, s session.Session, _ *cobra.Command, _ []string) error {
+			if viewWeb && viewJSON {
+				return fmt.Errorf("--web and --json cannot be combined")
+			}
+			if viewWeb {
+				return format.OpenInBrowser(Site() + "/jira/software/projects/" + url.PathEscape(key) + "/boards")
+			}
+			return j.withSession(false, func(ctx context.Context, s session.Session, _ *cobra.Command, _ []string) error {
 				p, raw, err := GetProject(ctx, s, key)
 				if err != nil {
 					return err
 				}
 				if viewJSON {
-					return format.PrintJSON(raw)
+					return printJSON(cmd, raw)
 				}
-				fmt.Println(format.Bold(p.Key + "  " + p.Name))
+				fmt.Fprintln(cmd.OutOrStdout(), format.Bold(p.Key+"  "+p.Name))
 				if desc := text(p.Description); desc != "" {
-					fmt.Println(desc)
+					fmt.Fprintln(cmd.OutOrStdout(), desc)
 				}
-				fmt.Println()
-				format.Line("Type", p.ProjectTypeKey, 10)
-				format.Line("Lead", p.Lead.DisplayName, 10)
-				format.Line("Category", p.ProjectCategory.Name, 10)
-				format.Line("URL", Site()+"/browse/"+p.Key, 10)
+				fmt.Fprintln(cmd.OutOrStdout())
+				printLine(cmd, "Type", p.ProjectTypeKey, 10)
+				printLine(cmd, "Lead", p.Lead.DisplayName, 10)
+				printLine(cmd, "Category", p.ProjectCategory.Name, 10)
+				printLine(cmd, "URL", Site()+"/browse/"+p.Key, 10)
 				return nil
 			})(cmd, args)
 		},
@@ -102,5 +114,6 @@ func projectCommand(j *Jira) *cobra.Command {
 	view.Flags().BoolVar(&viewWeb, "web", false, "open the project in your default browser instead")
 
 	cmd.AddCommand(list, view)
+	cmd.AddCommand(projectMetadataCommands(j)...)
 	return cmd
 }

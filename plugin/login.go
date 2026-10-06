@@ -236,7 +236,11 @@ func pause(ctx context.Context, spec background.Spec, st background.Status, prof
 
 // signedIn checks without a window whether the profile works now.
 func signedIn(ctx context.Context, owner Plugin, probe string) bool {
-	h, err := Acquire(ctx, owner, session.AcquireOptions{})
+	// The caller owns the login lock. Bypass automatic startup, whose normal
+	// callers must wait until that lock is released.
+	h, err := session.Acquire(ctx, ProfileFor(owner), session.AcquireOptions{
+		Seed: session.SeedOptions{From: globalFlags.From, NoInherit: globalFlags.NoInherit},
+	})
 	if err != nil {
 		return false
 	}

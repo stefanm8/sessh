@@ -109,10 +109,25 @@ func exportStorageState(parent string) (json.RawMessage, error) {
 // ImportProfile seeds a sessh profile from an existing Chromium user-data
 // directory, copying cookies and localStorage without message history or caches.
 func ImportProfile(name, fromDir string) error {
+	return importProfile(name, fromDir, exportStorageStateFromDir)
+}
+
+func importProfile(name, fromDir string, export func(string) (json.RawMessage, error)) error {
+	if name == "" {
+		return fmt.Errorf("no profile named")
+	}
 	if _, err := os.Stat(filepath.Join(fromDir, "Default")); err != nil {
 		return fmt.Errorf("%s does not look like a Chromium profile (no Default/ inside)", fromDir)
 	}
-	state, err := exportStorageStateFromDir(fromDir)
+	// Replacing credentials while a browser is open would leave it serving
+	// the previous account until a later restart. Refuse that target before
+	// opening the source, and retain ownership through the seed/metadata write.
+	lock, err := acquireLock(name)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	state, err := export(fromDir)
 	if err != nil {
 		return err
 	}
@@ -131,6 +146,9 @@ func ImportProfile(name, fromDir string) error {
 		meta.Created = time.Now()
 	}
 	meta.Parent = fromDir
+	meta.LastVerified = time.Time{}
+	meta.LastIdentity = ""
+	meta.Origins = nil
 	return WriteMeta(meta)
 }
 
