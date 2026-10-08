@@ -5,8 +5,8 @@
 // long-lock case — `sessh teams capture` holds its profile for hours, and other
 // commands route through its socket instead of failing to launch.
 //
-// The read-only query commands need no session at all: they read the captured
-// messages.jsonl and never open a browser.
+// Queries read the captured messages.jsonl. The messages command ensures its
+// capture daemon is ready first; --offline and --source keep reads local.
 package teams
 
 import (
@@ -180,9 +180,11 @@ func (t *Teams) Command() *cobra.Command {
 		Short: "Capture and query Microsoft Teams messages",
 		Long: `Query the locally captured Teams messages, and run the capture that fills them.
 
-The query commands are read-only over messages.jsonl and never open a browser.
-` + "`sessh teams capture start`" + ` runs capture in the background and keeps the
-browser open after you close the terminal. Use capture status, logs, and stop
+Queries read messages.jsonl. The messages command starts capture if needed and
+waits for its first successful harvest; --offline or --source reads saved data
+directly. Other query commands stay local.
+` + "`sessh teams capture`" + ` starts a daemon and keeps the
+browser open after you close the terminal. Use capture status, monitor, logs, and stop
 to manage it. A separate daemon is not needed.`,
 	}
 	cmd.AddCommand(queryCommands(t)...)

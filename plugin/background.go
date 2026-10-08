@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -28,13 +29,18 @@ func BackgroundArgs(cmd *cobra.Command, positional []string) []string {
 	args := append(strings.Fields(path)[1:], positional...)
 	seen := map[string]bool{}
 	add := func(f *pflag.Flag) {
-		if f.Changed && !seen[f.Name] && f.Name != "background" {
+		if f.Changed && !seen[f.Name] && f.Name != "background" && f.Name != "foreground" {
 			seen[f.Name] = true
 			args = append(args, "--"+f.Name+"="+f.Value.String())
 		}
 	}
 	cmd.Flags().VisitAll(add)
 	cmd.InheritedFlags().VisitAll(add)
+	// Commands that detach by default must execute the work in the child,
+	// including when restarting a paused worker after login.
+	if cmd.Flags().Lookup("foreground") != nil {
+		args = append(args, "--foreground=true")
+	}
 	return args
 }
 
@@ -60,6 +66,9 @@ func printServiceStatus(cmd *cobra.Command, st background.Status) {
 		fmt.Fprintf(cmd.OutOrStdout(), " (pid %d)", st.PID)
 	}
 	fmt.Fprintln(cmd.OutOrStdout())
+	if !st.Started.IsZero() {
+		fmt.Fprintln(cmd.OutOrStdout(), "Started:", st.Started.Local().Format(time.RFC3339))
+	}
 	if st.Detail != "" {
 		fmt.Fprintln(cmd.OutOrStdout(), st.Detail)
 	}
@@ -68,11 +77,13 @@ func printServiceStatus(cmd *cobra.Command, st background.Status) {
 
 // AddServiceControls shares lifecycle controls between daemon and capture.
 func AddServiceControls(cmd *cobra.Command, args cobra.PositionalArgs, spec func([]string) (background.Spec, error)) {
-	for _, action := range []string{"status", "stop", "logs"} {
+	for _, action := range []string{"status", "monitor", "stop", "logs"} {
 		child := &cobra.Command{Use: action, Args: args}
 		switch action {
 		case "status":
 			child.Short = "Show whether the background or foreground worker is running"
+		case "monitor":
+			child.Short = "Watch worker status and progress until Ctrl+C (leaves the worker running)"
 		case "stop":
 			child.Short = "Stop the worker and close its browser session cleanly"
 		case "logs":
@@ -84,15 +95,8 @@ func AddServiceControls(cmd *cobra.Command, args cobra.PositionalArgs, spec func
 				return err
 			}
 			switch c.Name() {
-			case "status":
-				st, _, err := s.Inspect(c.Context())
-				if err != nil {
-					return err
-				}
-				printServiceStatus(c, st)
-				if st.State == "failed" || st.State == "unreachable" {
-					return Exit(1)
-				}
+			case "status", "monitor":
+				return watchServiceStatus(c, s)
 			case "stop":
 				ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 				defer cancel()
@@ -114,6 +118,57 @@ func AddServiceControls(cmd *cobra.Command, args cobra.PositionalArgs, spec func
 		if action == "logs" {
 			child.Flags().BoolP("follow", "f", false, "follow new output until Ctrl+C")
 		}
+		if action == "status" || action == "monitor" {
+			child.Flags().Bool("json", false, "print JSON (one object per refresh when watching)")
+			child.Flags().Duration("interval", 2*time.Second, "time between status refreshes when watching")
+			if action == "status" {
+				child.Flags().BoolP("watch", "w", false, "watch status until Ctrl+C (same as monitor)")
+			}
+		}
 		cmd.AddCommand(child)
+	}
+}
+
+func watchServiceStatus(cmd *cobra.Command, spec background.Spec) error {
+	watch, _ := cmd.Flags().GetBool("watch")
+	watch = watch || cmd.Name() == "monitor"
+	asJSON, _ := cmd.Flags().GetBool("json")
+	interval, _ := cmd.Flags().GetDuration("interval")
+	if interval <= 0 {
+		return fmt.Errorf("--interval must be positive")
+	}
+	for {
+		st, _, err := spec.Inspect(cmd.Context())
+		if cmd.Context().Err() != nil {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if asJSON {
+			if err := json.NewEncoder(cmd.OutOrStdout()).Encode(st); err != nil {
+				return err
+			}
+		} else {
+			if watch {
+				fmt.Fprintln(cmd.OutOrStdout(), "Observed:", time.Now().Format(time.RFC3339))
+			}
+			printServiceStatus(cmd, st)
+		}
+		if !watch {
+			if st.State == "failed" || st.State == "unreachable" {
+				return Exit(1)
+			}
+			return nil
+		}
+		// Continue across failures and restarts. Watching never owns or stops
+		// the worker; cancelling this command only ends observation.
+		timer := time.NewTimer(interval)
+		select {
+		case <-cmd.Context().Done():
+			timer.Stop()
+			return nil
+		case <-timer.C:
+		}
 	}
 }

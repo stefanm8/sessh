@@ -51,14 +51,15 @@ const (
 
 func captureCommand(t *Teams) *cobra.Command {
 	var cfg captureConfig
-	var detached bool
+	var detached, foreground bool
 	cmd := &cobra.Command{
 		Use: "capture", Short: "Capture Teams messages into the local store",
 		Long: `Capture Teams messages using your saved login.
 
   sessh auth login teams          # sign in once
-  sessh teams capture start       # keep capturing after closing the terminal
+  sessh teams capture             # start a daemon and return to your shell
   sessh teams capture status      # check progress or login errors
+  sessh teams capture monitor     # watch status and capture progress
   sessh teams capture logs -f     # follow background output
   sessh teams capture stop        # clean shutdown
 
@@ -67,22 +68,29 @@ separate daemon is needed. It reads Teams' local cache into messages.jsonl.
 By default it also opens and scrolls chats to load history, marking them read.
 Use --no-scroll to capture only what Teams already cached.
 
-Without a subcommand, runs in the foreground. Ctrl+C is a clean shutdown.
-Use --once to refresh the local store once and exit.`,
+Without a subcommand, starts in the background (same as capture start).
+Use --foreground to stay in this terminal; Ctrl+C is a clean shutdown.
+Use --once to refresh the local store once in the foreground and exit.`,
 		Args: cobra.NoArgs,
 	}
 	run := func(c *cobra.Command, _ []string) error {
+		explicitBackground := detached || c.Name() == "start"
+		if explicitBackground && (cfg.once || foreground) {
+			return fmt.Errorf("background capture cannot use --once or --foreground; use sessh teams capture with those flags")
+		}
 		if err := cfg.resolve(); err != nil {
 			return err
 		}
 		spec := plugin.Service("teams capture", t)
-		if detached || c.Name() == "start" {
-			if cfg.once {
-				return fmt.Errorf("--once runs in the foreground; use sessh teams capture --once")
+		if !foreground && !cfg.once {
+			if err := plugin.StartBackground(c, spec, nil); err != nil {
+				return err
 			}
-			return plugin.StartBackground(c, spec, nil)
+			fmt.Fprintf(c.OutOrStdout(), "Monitor: sessh teams capture monitor --profile %q\n", plugin.ProfileFor(t).Name)
+			fmt.Fprintf(c.OutOrStdout(), "Logs: sessh teams capture logs -f --profile %q\n", plugin.ProfileFor(t).Name)
+			return nil
 		}
-		return spec.Run(c.Context(), func(ctx context.Context, report func(string, string)) error {
+		return spec.RunWithProgress(c.Context(), func(ctx context.Context, report func(string, string, json.RawMessage)) error {
 			cfg.report = report
 			return runCapture(ctx, t, cfg)
 		})
@@ -96,15 +104,16 @@ Use --once to refresh the local store once and exit.`,
 	f.DurationVar(&cfg.idbInterval, "idb-interval", 60*time.Second, "how often to re-read Teams' IndexedDB")
 	f.DurationVar(&cfg.pollInterval, "poll-interval", 5*time.Second, "how often to drain the in-page live capture")
 	f.BoolVar(&cfg.once, "once", false, "harvest IndexedDB once and exit")
+	f.BoolVar(&foreground, "foreground", false, "capture in this terminal until Ctrl+C instead of starting a daemon")
 	f.BoolVar(&cfg.verbose, "verbose", false, "log every captured message")
-	cmd.Flags().BoolVarP(&detached, "background", "d", false, "start in the background (same as capture start)")
+	cmd.Flags().BoolVarP(&detached, "background", "d", false, "start in the background (the default; same as capture start)")
 	cmd.AddCommand(&cobra.Command{Use: "start", Short: "Start capturing in the background and return to your shell", Args: cobra.NoArgs, RunE: run})
 	plugin.AddServiceControls(cmd, cobra.NoArgs, func(_ []string) (background.Spec, error) { return plugin.Service("teams capture", t), nil })
 	return cmd
 }
 
 type captureConfig struct {
-	report       func(string, string)
+	report       func(string, string, json.RawMessage)
 	dataDir      string
 	out          string
 	headed       bool
@@ -119,6 +128,41 @@ type captureConfig struct {
 	scrollEnabled bool
 	scroll        scrollerConfig
 	intercept     interceptConfig
+}
+
+type captureProgress struct {
+	MessagesFile  string    `json:"messages_file"`
+	Ready         bool      `json:"ready"`
+	Messages      int       `json:"messages"`
+	NewMessages   int       `json:"new_messages"`
+	Conversations int       `json:"conversations"`
+	LastPoll      time.Time `json:"last_poll"`
+	LastHarvest   time.Time `json:"last_harvest"`
+}
+
+// Progress comes from successful capture work, so an idle chat stream can be
+// distinguished from a browser that has stopped answering. Keep it with the
+// writer so browser retries do not reset counts or the last successful times.
+func (c captureConfig) reportProgress(w *captureWriter, state, detail string) {
+	if c.report == nil {
+		return
+	}
+	stamp := func(t time.Time) string {
+		if t.IsZero() {
+			return "not yet"
+		}
+		return t.Format(time.RFC3339)
+	}
+	p := captureProgress{MessagesFile: c.messagesPath}
+	if w != nil {
+		p.Ready = w.ready
+		p.Messages, p.NewMessages, p.Conversations = len(w.seenIDs), w.written, len(w.conv)
+		p.LastPoll, p.LastHarvest = w.lastPoll, w.lastHarvest
+		detail = fmt.Sprintf("%s\nMessages: %d total, %d new this run; conversations: %d\nLast successful poll: %s\nLast successful harvest: %s\nMessages file: %s",
+			detail, p.Messages, p.NewMessages, p.Conversations, stamp(p.LastPoll), stamp(p.LastHarvest), p.MessagesFile)
+	}
+	data, _ := json.Marshal(p)
+	c.report(state, detail, data)
 }
 
 // resolve applies the documented precedence — flag, then environment, then the
@@ -275,6 +319,7 @@ func envInt(name string, def int64) int64 {
 // session makes a relaunch idempotent: the sets never reload, so a restart
 // cannot re-append the backlog.
 func runCapture(ctx context.Context, t *Teams, cfg captureConfig) error {
+	cfg.reportProgress(nil, "starting", "Loading local capture from "+cfg.messagesPath)
 	w, err := openCaptureWriter(cfg)
 	if err != nil {
 		return err
@@ -321,9 +366,7 @@ func runCapture(ctx context.Context, t *Teams, cfg captureConfig) error {
 		}
 		captureWarn("session ended: %v", err)
 		captureWarn("restart %d/%d in %s", failures, maxRestarts, restartDelay.Round(time.Second))
-		if cfg.report != nil {
-			cfg.report("recovering", fmt.Sprintf("Retrying in %s: %v", restartDelay, err))
-		}
+		cfg.reportProgress(w, "recovering", fmt.Sprintf("Retrying in %s: %v", restartDelay, err))
 		if err := sleepCtx(ctx, restartDelay); err != nil {
 			return nil
 		}
@@ -338,12 +381,17 @@ func isBusy(err error) bool {
 // captureSession is one browser lifetime: acquire, install, poll until the
 // context is cancelled or the page stops answering.
 func captureSession(ctx context.Context, t *Teams, cfg captureConfig, w *captureWriter) error {
+	w.ready = false
+	cfg.reportProgress(w, "starting", "Opening the Teams browser session.")
 	h, err := plugin.Acquire(ctx, t, session.AcquireOptions{
 		// The whole point of this command's shape: hold the profile and lend it
 		// out over the socket rather than monopolizing it.
 		Serve:  true,
 		Headed: cfg.headed,
-		Notify: func(msg string) { captureLog("%s", msg) },
+		Notify: func(msg string) {
+			captureLog("%s", msg)
+			cfg.reportProgress(w, "starting", msg)
+		},
 	})
 	if err != nil {
 		return err
@@ -360,6 +408,7 @@ func captureSession(ctx context.Context, t *Teams, cfg captureConfig, w *capture
 		return fmt.Errorf("opening %s: %w", TeamsURL(), err)
 	}
 	captureLog("open %s", format.Gray(landed))
+	cfg.reportProgress(w, "starting", "Waiting for Teams to settle before the first harvest.")
 
 	if cfg.once {
 		if err := sleepCtx(ctx, idbSettleDelay); err != nil {
@@ -420,15 +469,11 @@ func (r *captureRun) note(err error) error {
 	if err == nil {
 		r.failures = 0
 		r.lastErr = ""
-		if r.cfg.report != nil {
-			r.cfg.report("running", "Capturing messages to "+r.cfg.messagesPath)
-		}
+		r.cfg.reportProgress(r.w, "running", "Capturing Teams messages.")
 		return nil
 	}
 	r.failures++
-	if r.cfg.report != nil {
-		r.cfg.report("recovering", err.Error())
-	}
+	r.cfg.reportProgress(r.w, "recovering", err.Error())
 	if msg := err.Error(); msg != r.lastErr {
 		captureWarn("%v", err)
 		r.lastErr = msg
@@ -493,7 +538,12 @@ func (r *captureRun) stopShims() {
 // Live capture: drain the in-page buffer
 // ---------------------------------------------------------------------------
 
-func (r *captureRun) poll(ctx context.Context) error {
+func (r *captureRun) poll(ctx context.Context) (err error) {
+	defer func() {
+		if err == nil {
+			r.w.lastPoll = time.Now()
+		}
+	}()
 	var out struct {
 		Capture struct {
 			Installed bool `json:"installed"`
@@ -629,6 +679,7 @@ func (r *captureRun) harvest(ctx context.Context) error {
 		convChanged += resolved
 		if err := r.w.writeConversationsFile(); err != nil {
 			captureWarn("writing %s: %v", r.w.convPath, err)
+			convErr = errors.Join(convErr, err)
 		}
 	}
 
@@ -644,6 +695,14 @@ func (r *captureRun) harvest(ctx context.Context) error {
 	for _, e := range dump.Errors {
 		captureWarn("idb: %s", e)
 	}
+	if len(dump.Errors) > 0 {
+		convErr = errors.Join(convErr, fmt.Errorf("reading Teams' IndexedDB: %s", strings.Join(dump.Errors, "; ")))
+	}
+	if convErr != nil {
+		return convErr
+	}
+	r.w.lastHarvest = time.Now()
+	r.w.ready = true
 	return nil
 }
 
@@ -673,6 +732,10 @@ type captureWriter struct {
 	seenIDs     map[string]struct{}
 	seenContent map[string]struct{}
 	resolver    *identityResolver
+	written     int
+	lastPoll    time.Time
+	lastHarvest time.Time
+	ready       bool
 
 	// Conversation state is a map, not a log: titles and member lists MUTATE
 	// (rename a group chat, add or remove people), so appending would pile up
@@ -764,6 +827,7 @@ func (w *captureWriter) write(c captured) (bool, error) {
 		return false, fmt.Errorf("appending to %s: %w", w.messagesPath, err)
 	}
 	w.seenIDs[m.ID] = struct{}{}
+	w.written++
 	w.resolver.observe(m.AuthorMRI, m.Sender)
 	if ck != "" {
 		w.seenContent[ck] = struct{}{}

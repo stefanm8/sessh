@@ -16,18 +16,16 @@ import (
 	"github.com/stefanm8/sessh/plugin"
 )
 
-// The query commands are the half of this plugin that never touches a browser:
-// they stream messages.jsonl and exit. None of them calls plugin.WithSession, so
-// reading history works while `sessh teams capture` holds the profile — and works
-// with no profile at all.
+// Queries stream messages.jsonl while capture owns the browser. The messages
+// command ensures capture is ready first, unless --offline or --source is used;
+// the other queries remain local reads.
 //
 // Exit codes are a contract an agent can branch on:
 //   0 success (including an empty result) · 2 usage · 3 no data · 4 not found
 // "nothing matched your filter" and "that id does not exist" are different
 // answers and must not share a code.
 
-// queryCommands takes the plugin only for symmetry with captureCommand: none of
-// these commands needs a profile, which is the whole point of them.
+// The daemon and message reader coordinate over the capture control socket.
 func queryCommands(_ *Teams) []*cobra.Command {
 	cmds := []*cobra.Command{
 		messagesCommand(),
@@ -71,7 +69,11 @@ func fail(code int, msg string, args ...any) error {
 // ---------------------------------------------------------------------------
 
 type queryFlags struct {
-	source string
+	source         string
+	autoCapture    bool
+	offline        bool
+	noScroll       bool
+	captureTimeout time.Duration
 
 	conversation  []string
 	sender        []string
@@ -242,12 +244,19 @@ func (f *queryFlags) load(cmd *cobra.Command) (*loadedRows, error) {
 const messageSortKeys = "time | sender | conversation | type | captured"
 
 func messagesCommand() *cobra.Command {
-	f := &queryFlags{}
+	f := &queryFlags{autoCapture: true}
 	cmd := &cobra.Command{
 		Use:     "messages",
 		Aliases: []string{"msgs"},
 		Short:   "Filter, sort and paginate captured messages",
 		Long: `Filter, sort and paginate the captured Teams messages — the core query.
+
+Starts the capture daemon if needed and waits for its first successful harvest.
+An already-ready capture is reused. Startup progress goes to stderr.
+Use --offline to read saved messages without starting or waiting for capture.
+An explicit --source also reads only that file. Auto-started capture opens and
+scrolls chats to load history, marking them read; --no-scroll disables this for
+a newly started worker. Existing workers keep their original options.
 
 Filters combine with AND across different flags and with OR within a repeated
 one, so ` + "`--sender A --sender B --since 24h`" + ` means "either person, in the last
@@ -270,6 +279,9 @@ System noise (ThreadActivity/* and Event/*) is dropped by default; pass
 	f.bindHeadTail(cmd)
 	f.bindMessageOutput(cmd)
 	f.bindSource(cmd)
+	cmd.Flags().BoolVar(&f.offline, "offline", false, "read saved messages without starting or waiting for capture")
+	cmd.Flags().BoolVar(&f.noScroll, "no-scroll", false, "disable chat scrolling when starting a new capture daemon")
+	cmd.Flags().DurationVar(&f.captureTimeout, "capture-timeout", 2*time.Minute, "maximum wait for capture to complete its first successful harvest")
 	return cmd
 }
 
@@ -318,13 +330,21 @@ func runMessageQuery(cmd *cobra.Command, f *queryFlags, extraGrep []string) erro
 		return fail(2, "%v", err)
 	}
 	f.grep = append(f.grep, extraGrep...)
+	// Validate filters that do not need directory data before starting work.
+	// Conversation names are resolved again against the harvested sidecar.
+	if _, err := f.buildFilter(cmd, nil, time.Now()); err != nil {
+		return fail(2, "%v", err)
+	}
+	if err := f.ensureMessagesCapture(cmd); err != nil {
+		return err
+	}
 
 	loaded, err := f.load(cmd)
 	if err != nil {
 		return err
 	}
 	if f.count {
-		fmt.Println(len(loaded.rows))
+		fmt.Fprintln(cmd.OutOrStdout(), len(loaded.rows))
 		return nil
 	}
 
@@ -333,7 +353,7 @@ func runMessageQuery(cmd *cobra.Command, f *queryFlags, extraGrep []string) erro
 	if err != nil {
 		return err
 	}
-	fmt.Println(out)
+	fmt.Fprintln(cmd.OutOrStdout(), out)
 	return nil
 }
 

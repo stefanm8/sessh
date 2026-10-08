@@ -3,6 +3,7 @@
 package background
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -21,12 +22,13 @@ import (
 
 type Spec struct{ Dir, Key, Name string }
 type Status struct {
-	Name    string    `json:"name"`
-	State   string    `json:"state"`
-	Detail  string    `json:"detail,omitempty"`
-	PID     int       `json:"pid,omitempty"`
-	Started time.Time `json:"started,omitempty"`
-	Log     string    `json:"log"`
+	Name     string          `json:"name"`
+	State    string          `json:"state"`
+	Detail   string          `json:"detail,omitempty"`
+	PID      int             `json:"pid,omitempty"`
+	Started  time.Time       `json:"started,omitempty"`
+	Log      string          `json:"log"`
+	Progress json.RawMessage `json:"progress,omitempty"`
 	// Key and Args let another process find this worker and start it again
 	// as it was; Detached tells a worker Start launched from one running in
 	// someone's terminal.
@@ -105,6 +107,14 @@ func (s Spec) Inspect(ctx context.Context) (Status, bool, error) {
 // Run owns the worker lock until work and all its cleanup have finished.
 // report publishes human-readable progress, including recovery after a crash.
 func (s Spec) Run(ctx context.Context, work func(context.Context, func(string, string)) error) error {
+	return s.RunWithProgress(ctx, func(ctx context.Context, report func(string, string, json.RawMessage)) error {
+		return work(ctx, func(state, detail string) { report(state, detail, nil) })
+	})
+}
+
+// RunWithProgress also publishes structured, worker-specific readiness and
+// progress in the same snapshot as its state. Readers need not parse prose.
+func (s Spec) RunWithProgress(ctx context.Context, work func(context.Context, func(string, string, json.RawMessage)) error) error {
 	guard, err := lock(s.path("lock"))
 	if err != nil {
 		return fmt.Errorf("%s is already running or cannot be locked: %w", s.Name, err)
@@ -162,13 +172,14 @@ func (s Spec) Run(ctx context.Context, work func(context.Context, func(string, s
 	})}
 	defer srv.Close()
 	go func() { _ = srv.Serve(ln) }()
-	report := func(state, detail string) {
+	report := func(state, detail string, progress json.RawMessage) {
 		mu.Lock()
 		defer mu.Unlock()
-		if ctx.Err() != nil || (st.State == state && st.Detail == detail) {
+		if ctx.Err() != nil || (st.State == state && st.Detail == detail && bytes.Equal(st.Progress, progress)) {
 			return
 		}
 		st.State, st.Detail = state, detail
+		st.Progress = bytes.Clone(progress)
 		_ = save()
 	}
 	err = work(ctx, report)

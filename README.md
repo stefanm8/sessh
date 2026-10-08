@@ -53,10 +53,12 @@ sessh bitbucket pr list example-repo
 sessh jira issue list PROJECT
 sessh confluence page view 123456
 sessh auth login teams
-sessh teams capture start       # runs after you close the terminal
+sessh teams capture             # starts a daemon; returns to your shell
 sessh teams capture status      # starting, running, or a login/error message
+sessh teams capture monitor     # watch state, counts, and last successful work
+sessh teams capture status --json # machine-readable status
 sessh teams capture logs -f     # follow progress; Ctrl+C only stops log viewing
-sessh teams messages --since 24h # reads local captures
+sessh teams messages --since 24h # starts capture if needed, waits, then reads
 sessh teams capture stop        # clean shutdown
 ```
 
@@ -68,13 +70,34 @@ instead. Background workers never open a window; a login that needs the profile
 of a running `daemon` or `capture` worker pauses it and restarts it afterwards.
 
 Teams capture keeps its browser open, so it needs no separate daemon. Repeating
-`start` reuses the running capture. Capture opens and scrolls chats to load
+`capture` or `capture start` reuses the running capture. Capture opens and scrolls chats to load
 history, which marks them read; add `--no-scroll` to only read cached messages.
-Use `sessh teams capture --once` for a single refresh, or `sessh teams capture`
-for foreground capture with Ctrl+C to stop. `--background` / `-d` is a shortcut
-for `start`. Background logs and status are private files under `~/.sessh/run`;
+Use `sessh teams capture --once` for a single foreground refresh, or
+`sessh teams capture --foreground` for continuous foreground capture with Ctrl+C
+to stop. `--background` / `-d` remains an alias for the default background mode.
+Background logs and status are private files under `~/.sessh/run`;
 `logs` shows the latest run. `status` reports browser startup separately from
-active capture, and retains failures after a worker exits.
+active capture, and retains failures after a worker exits. It includes the PID,
+start time, message and conversation counts, and the last successful poll and
+harvest. `monitor` (or `status --watch`) refreshes every two seconds; use
+`--interval 5s` to change that or `--json` for one JSON object per refresh.
+Ctrl+C ends monitoring while capture continues. Monitoring stays open across
+worker failures and restarts. Use the same `--profile` as the capture command.
+
+`sessh teams messages` (also `msgs`) starts capture automatically when needed,
+even when saved messages already exist. It waits for the daemon's first
+successful IndexedDB harvest before querying; an empty completed harvest is a
+valid empty result. An already-ready daemon is reused. Startup progress goes to
+stderr so JSON output stays clean. Use `--capture-timeout 3m` to change the
+default two-minute wait, and `--no-scroll` to disable chat scrolling for a newly
+started capture. Existing workers keep their original options.
+
+`messages --offline` reads saved data without starting or waiting for capture.
+An explicit `--source /path/to/messages.jsonl` also stays offline. Other Teams
+queries (`search`, `show`, `stats`, and directory queries) remain local reads.
+If capture fails or writes a different file than the query's configured store,
+the command reports the problem instead of silently returning stale data.
+Cancelling a waiting query leaves the shared daemon running.
 
 Browser-backed commands automatically leave a headless browser and its tabs
 open for 30 minutes after the last request. Later commands reuse the same

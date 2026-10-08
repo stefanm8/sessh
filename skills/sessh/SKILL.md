@@ -72,15 +72,28 @@ sessh confluence space list --limit 1 --json
 sessh teams messages --since 24h --limit 20 -f json
 ```
 
-Teams queries read local captures without a browser. A missing capture needs
-`sessh teams capture start` (background, survives closing the terminal), not
-another login. Check it with `sessh teams capture status`, inspect progress with
-`sessh teams capture logs`, and stop it with `sessh teams capture stop`. Capture
+`sessh teams messages` (or `msgs`) ensures capture is running and waits for its
+first successful harvest before reading messages, even if a saved file already
+exists. Startup progress goes to stderr; JSON stdout remains parseable. The
+default wait is two minutes (`--capture-timeout 3m` changes it). `--offline` or
+an explicit `--source /path/to/messages.jsonl` reads saved data without starting
+capture; other Teams query commands also remain local. Use `--no-scroll` on
+messages to disable chat scrolling for a newly started daemon. An existing
+worker keeps its original flags. Capture errors are reported rather than
+silently falling back to saved messages.
+
+`sessh teams capture` starts the daemon explicitly and survives closing the
+terminal. Check it with `sessh teams capture status`, inspect progress with
+`sessh teams capture logs -f`, watch state and capture progress with
+`sessh teams capture monitor`, and stop it with `sessh teams capture stop`.
+`status --json` provides machine-readable status; `status --watch` is equivalent
+to `monitor`. Ctrl+C ends observation while the daemon continues. Capture
 already keeps its browser open and needs no separate daemon. Use `--once` on
-plain `capture` for one refresh. Capture opens chats and marks them read unless
+plain `capture` for one foreground refresh, or `--foreground` for continuous
+capture in the terminal. `capture start` and `-d` still work. Capture opens chats and marks them read unless
 `--no-scroll` is passed. If explicitly requested, `sessh autostart enable teams`
 adds an idempotent shell startup entry; `autostart disable` removes it.
-Use `--source /path/to/messages.jsonl` for an existing capture. Do not start
+Use `messages --offline` when a task only needs saved history. Do not start
 capture unless the task needs it. Keep credentials, profiles, and message
 contents out of diagnostics and source control; summarize live tests by result.
 
