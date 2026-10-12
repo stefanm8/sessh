@@ -136,9 +136,9 @@ func login(ctx context.Context, owner Plugin, opts LoginOptions, need loginNeed)
 	var verifiedAt time.Time
 	hinted := false
 	for {
-		if p.Verify(ctx, observed) == nil {
+		if session.Verify(ctx, p, observed) == nil {
 			if probeOK(ctx, h.Session, need.probe) {
-				id, _ := h.Session.Whoami(ctx)
+				id := session.LookupIdentity(ctx, h.Session)
 				session.TouchVerified(p.Name, p.Origin, id)
 				name := id.Name()
 				if name == "" {
@@ -255,6 +255,8 @@ func probeOK(ctx context.Context, s session.Session, url string) bool {
 	if url == "" {
 		return true
 	}
+	ctx, cancel := context.WithTimeout(ctx, session.VerificationTimeout)
+	defer cancel()
 	req, err := session.Request(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return true

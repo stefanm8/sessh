@@ -95,6 +95,12 @@ func TestRunSessionRecovery(t *testing.T) {
 			wantErr: "access denied (HTTP 403) for https://tenant.example/api/private: profile test is signed in"},
 		{name: "a 403 from a session that no longer verifies logs in",
 			results: []error{denied}, verify: signedOut, wantRuns: 2, wantLogins: 1},
+		{name: "a 403 with an unreachable verifier does not open a login",
+			results: []error{denied}, verify: func(context.Context, session.Session) error { return errors.New("connection lost") },
+			wantRuns: 1, wantErr: "could not check the session after HTTP 403: connection lost"},
+		{name: "a 403 with a timed out verifier does not open a login",
+			results: []error{denied}, verify: func(context.Context, session.Session) error { return context.DeadlineExceeded },
+			wantRuns: 1, wantErr: "context deadline exceeded"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

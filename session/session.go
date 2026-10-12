@@ -173,15 +173,21 @@ func IsLoginURL(rawurl string) bool {
 	if err != nil {
 		return false
 	}
-	host := strings.ToLower(u.Host)
+	host := strings.ToLower(u.Hostname())
 	path := strings.ToLower(u.Path)
+	fragment, _, _ := strings.Cut(strings.ToLower(u.Fragment), "?")
 	switch {
-	case strings.Contains(host, "id.atlassian.com"),
-		strings.Contains(host, "login.microsoftonline.com"),
-		strings.Contains(host, "login.live.com"):
+	case host == "id.atlassian.com", host == "login.microsoftonline.com", host == "login.live.com":
 		return true
-	case strings.HasPrefix(path, "/account/signin"), strings.HasPrefix(path, "/login"):
+	case loginPath(path), loginPath(strings.TrimPrefix(path, "/wiki")):
+		return true
+	case loginPath(fragment):
 		return true
 	}
 	return false
+}
+
+func loginPath(path string) bool {
+	return path == "/login" || strings.HasPrefix(path, "/login/") ||
+		path == "/login.action" || path == "/account/signin" || strings.HasPrefix(path, "/account/signin/")
 }

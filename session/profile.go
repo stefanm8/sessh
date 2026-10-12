@@ -23,8 +23,9 @@ type Profile struct {
 
 	// Verify checks that the profile really carries a live session for this
 	// origin, and may mint one (silent SSO) before returning. It is allowed to
-	// navigate the page. Called once per acquire; returning an ErrAuth-wrapped
-	// error means "the user must log in".
+	// navigate the page. The session.Verify entry point supplies the global
+	// deadline; hooks must honor ctx and use WaitForAuth for pending SSO or app
+	// startup. Returning an ErrAuth-wrapped error means "the user must log in".
 	Verify func(ctx context.Context, s Session) error
 
 	// Whoami backs Session.Whoami for this profile's origin.

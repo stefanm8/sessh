@@ -708,6 +708,12 @@ func (c *rpcClient) RememberIdentity(id Identity) {
 	c.identityMu.Unlock()
 }
 
+func (c *rpcClient) CachedIdentity() Identity {
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	return c.ident
+}
+
 func (c *rpcClient) storageState() (json.RawMessage, error) {
 	var st json.RawMessage
 	if err := c.call("storagestate", nil, &st); err != nil {

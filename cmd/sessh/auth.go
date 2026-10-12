@@ -259,7 +259,7 @@ func statusOne(ctx context.Context, owner plugin.Plugin, verbose bool) (bool, er
 	}
 	defer h.Close()
 
-	id, _ := h.Session.Whoami(ctx)
+	id := session.LookupIdentity(ctx, h.Session)
 	name := id.Name()
 	line := fmt.Sprintf("%s %s", label, format.Green("✓ logged in"))
 	if name != "" {

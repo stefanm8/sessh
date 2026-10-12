@@ -250,29 +250,40 @@ func (s *browserSession) Navigate(ctx context.Context, rawurl string) (string, e
 		return "", err
 	}
 	url := ResolveAgainst(s.profile.Origin, rawurl)
-	// A navigation that fails still usually leaves the page somewhere useful
-	// (an SSO bounce, say), so report where we ended up. Either way the page
-	// has been pointed somewhere on purpose, and a later Eval must not move it.
-	done := make(chan struct{})
+	// Keep browser work bounded by the caller's verification budget. Most
+	// navigation errors are transport failures, not evidence of signed-out
+	// state. SSO can supersede navigation on either a login or an app page;
+	// the verifier must inspect the resulting session in that case.
+	done := make(chan error, 1)
 	go func() {
-		_, _ = s.page.Goto(url, playwright.PageGotoOptions{
+		_, err := s.page.Goto(url, playwright.PageGotoOptions{
 			WaitUntil: playwright.WaitUntilStateDomcontentloaded,
 			Timeout:   playwright.Float(requestTimeout(ctx)),
 		})
-		close(done)
+		done <- err
 	}()
+	var err error
 	select {
 	case <-ctx.Done():
 		s.mu.Lock()
 		s.unusable = true
 		s.mu.Unlock()
 		return "", ctx.Err()
-	case <-done:
+	case err = <-done:
 	}
 	s.mu.Lock()
 	s.primed = true
 	s.mu.Unlock()
-	return s.page.URL(), nil
+	landed := s.page.URL()
+	if err != nil {
+		message := strings.ToLower(err.Error())
+		interrupted := strings.Contains(message, "net::err_aborted") ||
+			strings.Contains(message, "is interrupted by another navigation")
+		if !interrupted {
+			return landed, fmt.Errorf("navigation to %s failed: %w", url, err)
+		}
+	}
+	return landed, nil
 }
 
 // Observe wraps a session so that Navigate reports where the page already is
@@ -292,17 +303,30 @@ func (o observer) Navigate(ctx context.Context, _ string) (string, error) {
 	return href, err
 }
 
-func (s *browserSession) Cookies(_ context.Context, rawurl string) ([]Cookie, error) {
-	url := ResolveAgainst(s.profile.Origin, rawurl)
-	cs, err := s.ctxt.Cookies(url)
-	if err != nil {
+func (s *browserSession) Cookies(ctx context.Context, rawurl string) ([]Cookie, error) {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	out := make([]Cookie, 0, len(cs))
-	for _, c := range cs {
-		out = append(out, Cookie{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path})
+	url := ResolveAgainst(s.profile.Origin, rawurl)
+	type result struct {
+		cookies []Cookie
+		err     error
 	}
-	return out, nil
+	done := make(chan result, 1)
+	go func() {
+		cs, err := s.ctxt.Cookies(url)
+		out := make([]Cookie, 0, len(cs))
+		for _, c := range cs {
+			out = append(out, Cookie{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path})
+		}
+		done <- result{out, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case res := <-done:
+		return res.cookies, res.err
+	}
 }
 
 func (s *browserSession) Whoami(ctx context.Context) (Identity, error) {
@@ -332,6 +356,12 @@ func (s *browserSession) RememberIdentity(id Identity) {
 	s.mu.Lock()
 	s.ident, s.hasIdnt = id, true
 	s.mu.Unlock()
+}
+
+func (s *browserSession) CachedIdentity() Identity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ident
 }
 
 // pageOrigin compares actual browser origins, ignoring paths and spelling

@@ -226,8 +226,11 @@ func forbidden(ctx context.Context, h *session.Handle, err error) error {
 	if !errors.As(err, &ae) || ae.Status != http.StatusForbidden {
 		return err
 	}
-	if h.Profile.Verify != nil && h.Profile.Verify(ctx, h.Session) != nil {
-		return err
+	if verificationErr := session.Verify(ctx, h.Profile, h.Session); verificationErr != nil {
+		if session.IsAuth(verificationErr) {
+			return err
+		}
+		return fmt.Errorf("could not check the session after HTTP 403: %w", verificationErr)
 	}
 	where := ae.URL
 	if u, perr := url.Parse(ae.URL); perr == nil {

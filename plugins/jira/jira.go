@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -52,43 +51,11 @@ func (j *Jira) Profile() session.Profile {
 // verify ensures the profile carries a live Jira *tenant* session, minting one
 // via silent SSO when only an Atlassian id-session is present.
 func verify(ctx context.Context, s session.Session) error {
-	if id, err := whoami(ctx, s); err != nil {
-		return err
-	} else if id.AccountID != "" {
-		session.RememberIdentity(s, id)
-		return nil // fast path: a valid tenant session already exists
+	err := session.VerifySSO(ctx, s, Site()+"/jira/", whoami)
+	if session.IsAuth(err) {
+		return session.Authf("atlassian", "no Jira session for %s. Run: sessh auth login jira", Site())
 	}
-	// Silent-SSO: visiting the tenant lets Atlassian set the session cookie
-	// without a password. The cookie lands via redirects shortly after load,
-	// so poll rather than assume.
-	landed, err := s.Navigate(ctx, Site()+"/jira/")
-	if err != nil {
-		return err
-	}
-	deadline := time.Now().Add(20 * time.Second)
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		// Redirects may already have minted the tenant cookie. Check now,
-		// without making successful SSO wait for the first polling interval.
-		if id, err := whoami(ctx, s); err != nil {
-			return err
-		} else if id.AccountID != "" {
-			session.RememberIdentity(s, id)
-			return nil
-		}
-		// A completed redirect to sign-in needs human input; another twenty
-		// seconds of anonymous API requests cannot refresh that session.
-		if session.IsLoginURL(landed) || !time.Now().Before(deadline) {
-			return session.Authf("atlassian", "no Jira session for %s. Run: sessh auth login jira", Site())
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1500 * time.Millisecond):
-		}
-	}
+	return err
 }
 
 func whoami(ctx context.Context, s session.Session) (session.Identity, error) {

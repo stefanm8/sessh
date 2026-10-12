@@ -8,9 +8,9 @@ package confluence
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -47,26 +47,11 @@ func (c *Confluence) Profile() session.Profile {
 }
 
 func verify(ctx context.Context, s session.Session) error {
-	if id, err := whoami(ctx, s); err == nil && id.AccountID != "" {
-		session.RememberIdentity(s, id)
-		return nil
+	err := session.VerifySSO(ctx, s, Wiki()+"/", whoami)
+	if session.IsAuth(err) {
+		return session.Authf("atlassian", "no Confluence session for %s. Run: sessh auth login confluence", Wiki())
 	}
-	if _, err := s.Navigate(ctx, Wiki()+"/"); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(20 * time.Second)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1500 * time.Millisecond):
-		}
-		if id, err := whoami(ctx, s); err == nil && id.AccountID != "" {
-			session.RememberIdentity(s, id)
-			return nil
-		}
-	}
-	return session.Authf("atlassian", "no Confluence session for %s. Run: sessh auth login confluence", Wiki())
+	return err
 }
 
 func whoami(ctx context.Context, s session.Session) (session.Identity, error) {
@@ -77,8 +62,11 @@ func whoami(ctx context.Context, s session.Session) (session.Identity, error) {
 		}
 		return session.Identity{}, err
 	}
-	if !raw.OK || raw.JSON == nil {
-		return session.Identity{}, nil
+	if !raw.OK {
+		return session.Identity{}, fmt.Errorf("Confluence identity: HTTP %d", raw.Status)
+	}
+	if raw.JSON == nil {
+		return session.Identity{}, fmt.Errorf("Confluence identity response is not JSON")
 	}
 	var me struct {
 		AccountID   string `json:"accountId"`
@@ -86,7 +74,7 @@ func whoami(ctx context.Context, s session.Session) (session.Identity, error) {
 		Email       string `json:"email"`
 	}
 	if err := raw.Decode(&me); err != nil {
-		return session.Identity{}, nil
+		return session.Identity{}, fmt.Errorf("invalid Confluence identity response: %w", err)
 	}
 	return session.Identity{AccountID: me.AccountID, DisplayName: me.DisplayName, Email: me.Email}, nil
 }

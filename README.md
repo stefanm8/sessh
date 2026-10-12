@@ -69,6 +69,11 @@ Commands started meanwhile share that one window. `--no-login` fails immediately
 instead. Background workers never open a window; a login that needs the profile
 of a running `daemon` or `capture` worker pauses it and restarts it afterwards.
 
+All plugins share a 15-second authentication-check budget across requests,
+navigation, and polling. Known sign-in pages stop the check immediately;
+network errors and timeouts are reported without opening a login window.
+Interactive sign-in keeps its separate five-minute deadline.
+
 Teams capture keeps its browser open, so it needs no separate daemon. Repeating
 `capture` or `capture start` reuses the running capture. Capture opens and scrolls chats to load
 history, which marks them read; add `--no-scroll` to only read cached messages.

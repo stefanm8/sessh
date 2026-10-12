@@ -216,14 +216,10 @@ func verify(ctx context.Context, p Profile, s Session) error {
 	if p.Verify == nil {
 		return nil
 	}
-	if err := p.Verify(ctx, s); err != nil {
-		if IsAuth(err) {
-			return err
-		}
+	if err := Verify(ctx, p, s); err != nil {
 		return err
 	}
-	id, _ := s.Whoami(ctx)
-	TouchVerified(p.Name, p.Origin, id)
+	TouchVerified(p.Name, p.Origin, CachedIdentity(s))
 	return nil
 }
 

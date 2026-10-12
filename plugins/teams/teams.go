@@ -12,8 +12,6 @@ package teams
 import (
 	"context"
 	"os"
-	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -65,37 +63,28 @@ func verify(ctx context.Context, s session.Session) error {
 	if err != nil {
 		return err
 	}
-	if isLoginHost(landed) {
+	if session.IsLoginURL(landed) {
 		return notSignedIn()
 	}
 
-	deadline := time.Now().Add(90 * time.Second)
-	for {
+	return session.WaitForAuth(ctx, func(ctx context.Context) (bool, error) {
 		var st struct {
 			URL   string `json:"url"`
 			Ready bool   `json:"ready"`
 		}
-		// A failed probe is almost always "the context was destroyed by the
-		// app's own redirect", which is progress, not an error.
-		if err := s.Eval(ctx, bootProbeJS, nil, &st); err == nil {
-			if isLoginHost(st.URL) {
-				return notSignedIn()
+		if err := s.Eval(ctx, bootProbeJS, nil, &st); err != nil {
+			// The app may replace the execution context while redirecting.
+			// Retry only that transition; other browser failures need surfacing.
+			if session.IsNavigationTransient(err) {
+				return false, nil
 			}
-			if st.Ready {
-				return nil
-			}
+			return false, err
 		}
-		if time.Now().After(deadline) {
-			return session.Authf("microsoft",
-				"Teams did not finish loading for this profile — it may be signed out.\n"+
-					"Check with: sessh auth login teams")
+		if session.IsLoginURL(st.URL) {
+			return false, notSignedIn()
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(2 * time.Second):
-		}
-	}
+		return st.Ready, nil
+	})
 }
 
 func notSignedIn() error {
@@ -108,13 +97,6 @@ const bootProbeJS = `async () => ({
   url: location.href,
   ready: (await indexedDB.databases()).some((d) => /:(replychain|conversation)-manager:/.test(d.name || '')),
 })`
-
-func isLoginHost(u string) bool {
-	l := strings.ToLower(u)
-	return strings.Contains(l, "login.microsoftonline.com") ||
-		strings.Contains(l, "login.live.com") ||
-		strings.Contains(l, "/_#/login")
-}
 
 // whoami reads the signed-in account out of the app's own storage: MSAL
 // account records when they are in local storage, and otherwise the user and
