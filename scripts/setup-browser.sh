@@ -2,7 +2,7 @@
 # Set up the exact browser driver expected by this sessh release, without sudo.
 set -eu
 export LC_ALL=C
-PLAYWRIGHT_VERSION=1.61.1
+PLAYWRIGHT_VERSION=1.62.1
 
 fail() { printf 'sessh browser setup: %s\n' "$*" >&2; exit 1; }
 case "${1:-}" in

@@ -15,7 +15,7 @@ import (
 
 // DriverVersion is the Playwright driver playwright-go expects. It must match
 // the `playwright-core` package we borrow when one is available locally.
-const DriverVersion = "1.61.1"
+const DriverVersion = "1.62.1"
 
 var (
 	pwOnce sync.Once
