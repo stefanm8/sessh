@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -127,7 +128,7 @@ func versionOf(pkgDir string) string {
 	var p struct {
 		Version string `json:"version"`
 	}
-	if err := jsonUnmarshal(b, &p); err != nil {
+	if err := json.Unmarshal(b, &p); err != nil {
 		return ""
 	}
 	return p.Version

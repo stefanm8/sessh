@@ -149,6 +149,7 @@ func TestMutationRequestsAndSuccess(t *testing.T) {
 	}{
 		{[]string{"issue", "create", "DEMO", "--type", "10001", "--summary", "New", "--json"}, 201, `{"id":"12","key":"DEMO-12","custom":true}`, "/rest/api/3/issue", "POST"},
 		{[]string{"issue", "edit", "DEMO-1", "--summary", "Changed", "--json"}, 204, "", "/rest/api/3/issue/DEMO-1", "PUT"},
+		{[]string{"issue", "edit", "DEMO-1", "--summary", "Changed", "--json"}, 200, `{"id":"10001","key":"DEMO-1","fields":{"summary":"Changed"}}`, "/rest/api/3/issue/DEMO-1", "PUT"},
 		{[]string{"issue", "assign", "DEMO-1", "someone", "--json"}, 204, "", "/rest/api/3/issue/DEMO-1/assignee", "PUT"},
 		{[]string{"issue", "transition", "DEMO-1", "31", "--json"}, 204, "", "/rest/api/3/issue/DEMO-1/transitions", "POST"},
 		{[]string{"issue", "comment", "add", "DEMO-1", "--body", "A comment", "--json"}, 201, `{"id":"27","body":{"type":"doc","version":1,"content":[]}}`, "/rest/api/3/issue/DEMO-1/comment", "POST"},
@@ -179,7 +180,7 @@ func TestMutationRequestsAndSuccess(t *testing.T) {
 			if last.ContentType != "application/json" || !json.Valid(last.Body) {
 				t.Fatalf("invalid write: %+v", last)
 			}
-			if tt.status == 204 && !strings.Contains(output, `"success": true`) {
+			if (tt.status == 204 || tt.args[1] == "edit") && !strings.Contains(output, `"success": true`) {
 				t.Fatalf("missing success: %s", output)
 			}
 		})
@@ -211,7 +212,6 @@ func TestMutationsDoNotRetryOrReadAfterWrite(t *testing.T) {
 func TestMutationLocalValidation(t *testing.T) {
 	cases := [][]string{
 		{"issue", "create", "DEMO", "--type", "10001"}, {"issue", "create", "DEMO", "--summary", "New"}, {"issue", "create", "DEMO", "--type", "", "--summary", "New"},
-		{"issue", "create", "DEMO", "--type", "Task", "--summary", "New", "--assignee", "bad id"},
 		{"issue", "edit", "DEMO-1"}, {"issue", "edit", "DEMO-1", "--summary="}, {"issue", "edit", "DEMO-1", "--description", "one", "--description-file", "-"}, {"issue", "edit", "DEMO-1", "--description-file", "-", "--fields-json", "-"},
 		{"issue", "edit", "DEMO-1", "--fields-json="}, {"issue", "edit", "DEMO-1", "--labels", "bad label"}, {"issue", "assign", "DEMO-1", ""}, {"issue", "transition", "DEMO-1", "Done"},
 		{"issue", "comment", "add", "DEMO-1"}, {"issue", "comment", "add", "DEMO-1", "--body", " "}, {"issue", "comment", "add", "DEMO-1", "--body", "one", "--body-file", "-"},
@@ -222,6 +222,14 @@ func TestMutationLocalValidation(t *testing.T) {
 			_, err := runJiraCommand(t, noRequestSession(t), "", args...)
 			if err == nil {
 				t.Fatal("expected validation error")
+			}
+		})
+	}
+	for _, account := range []string{"bad id", "bad/id", "bad?id", ".", ".."} {
+		t.Run("invalid assignee "+account, func(t *testing.T) {
+			out, err := runJiraCommand(t, noRequestSession(t), "", "issue", "create", "DEMO", "--summary", "New", "--type", "Task", "--assignee", account, "--dry-run")
+			if err == nil || !strings.Contains(err.Error(), "account ID") || out != "" {
+				t.Fatalf("output=%q error=%v; expected account ID validation before metadata", out, err)
 			}
 		})
 	}
@@ -307,5 +315,36 @@ func TestCreateTypeNameResolution(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A syntactically valid JSON value is not necessarily a Jira success response.
+// Unexpected 2xx payloads must not be reported as a successful issue update.
+func TestRejectsMalformedMutationSuccess(t *testing.T) {
+	commands := [][]string{
+		{"issue", "edit", "DEMO-1", "--summary", "Changed", "--json"},
+		{"issue", "assign", "DEMO-1", "account-123", "--json"},
+		{"issue", "transition", "DEMO-1", "31", "--json"},
+	}
+	for _, args := range commands {
+		for _, body := range []string{`true`, `42`, `"accepted"`, `[]`, `{}`, `{"errorMessages":["Update rejected"]}`} {
+			t.Run(args[1]+"/"+body, func(t *testing.T) {
+				writes := 0
+				s := &requestSession{respond: func(r *http.Request) (int, string, error) {
+					if r.Method == http.MethodGet {
+						return 200, `{"transitions":[{"id":"31","name":"Done"}]}`, nil
+					}
+					writes++
+					return http.StatusOK, body, nil
+				}}
+				out, err := runJiraCommand(t, s, "", args...)
+				if err == nil || out != "" {
+					t.Errorf("unexpected success: output=%q error=%v", out, err)
+				}
+				if writes != 1 {
+					t.Errorf("writes=%d; malformed success must never trigger a retry", writes)
+				}
+			})
+		}
 	}
 }

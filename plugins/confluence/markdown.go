@@ -1,6 +1,7 @@
 package confluence
 
 import (
+	"cmp"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -454,13 +455,13 @@ func renderInline(n *Node, ctx *mdCtx) string {
 		return "[" + label + "](" + href + ")"
 	case "img":
 		src := absolute(n.Attr("src"), ctx)
-		alt := escapeLabel(firstNonEmpty(n.Attr("alt"), n.Attr("title")))
+		alt := escapeLabel(cmp.Or(n.Attr("alt"), n.Attr("title")))
 		if src == "" {
 			return ""
 		}
 		return "![" + alt + "](" + src + ")"
 	case "time":
-		return escapeText(firstNonEmpty(n.Attr("datetime"), TextOf(n)))
+		return escapeText(cmp.Or(n.Attr("datetime"), TextOf(n)))
 	case "ac:link":
 		return renderACLink(n, ctx)
 	case "ac:image":
@@ -492,15 +493,6 @@ func renderInline(n *Node, ctx *mdCtx) string {
 	default:
 		return renderChildren(n, ctx)
 	}
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // --- lists ------------------------------------------------------------------
@@ -734,7 +726,7 @@ func renderACLink(n *Node, ctx *mdCtx) string {
 	}
 
 	if user := FindChild(n, "ri:user"); user != nil {
-		id := firstNonEmpty(user.Attr("ri:account-id"), user.Attr("ri:userkey"))
+		id := cmp.Or(user.Attr("ri:account-id"), user.Attr("ri:userkey"))
 		if name, ok := ctx.Users[id]; ok && name != "" {
 			return "@" + name
 		}
@@ -750,12 +742,12 @@ func renderACLink(n *Node, ctx *mdCtx) string {
 	}
 	if page != nil {
 		title := page.Attr("ri:content-title")
-		space := firstNonEmpty(page.Attr("ri:space-key"), ctx.SpaceKey)
+		space := cmp.Or(page.Attr("ri:space-key"), ctx.SpaceKey)
 		href := ""
 		if space != "" {
 			href = ctx.Wiki + "/display/" + url.PathEscape(space) + "/" + displayPath(title) + anchor
 		}
-		return link(href, firstNonEmpty(label, escapeLabel(title)))
+		return link(href, cmp.Or(label, escapeLabel(title)))
 	}
 
 	if att := FindChild(n, "ri:attachment"); att != nil {
@@ -764,12 +756,12 @@ func renderACLink(n *Node, ctx *mdCtx) string {
 		if ctx.PageID != "" {
 			href = ctx.Wiki + "/download/attachments/" + ctx.PageID + "/" + url.PathEscape(file)
 		}
-		return link(href, firstNonEmpty(label, escapeLabel(file)))
+		return link(href, cmp.Or(label, escapeLabel(file)))
 	}
 
 	if space := FindChild(n, "ri:space"); space != nil {
 		key := space.Attr("ri:space-key")
-		return link(ctx.Wiki+"/spaces/"+url.PathEscape(key), firstNonEmpty(label, escapeLabel(key)))
+		return link(ctx.Wiki+"/spaces/"+url.PathEscape(key), cmp.Or(label, escapeLabel(key)))
 	}
 
 	if u := FindChild(n, "ri:url"); u != nil {
@@ -778,13 +770,13 @@ func renderACLink(n *Node, ctx *mdCtx) string {
 
 	// A bare <ac:link ac:anchor="…"> points inside the current page.
 	if anchor != "" {
-		return link(anchor, firstNonEmpty(label, escapeLabel(n.Attr("ac:anchor"))))
+		return link(anchor, cmp.Or(label, escapeLabel(n.Attr("ac:anchor"))))
 	}
 	return label
 }
 
 func renderACImage(n *Node, ctx *mdCtx) string {
-	name := firstNonEmpty(n.Attr("ac:alt"), n.Attr("ac:title"))
+	name := cmp.Or(n.Attr("ac:alt"), n.Attr("ac:title"))
 	att := FindChild(n, "ri:attachment")
 	u := FindChild(n, "ri:url")
 
@@ -856,7 +848,7 @@ func renderMacro(n *Node, ctx *mdCtx) string {
 
 	switch name {
 	case "code":
-		body := fence(plain, mapLang(firstNonEmpty(params["language"], params["lang"])))
+		body := fence(plain, mapLang(cmp.Or(params["language"], params["lang"])))
 		if t := params["title"]; t != "" {
 			return "**" + t + "**\n\n" + body
 		}
@@ -877,7 +869,7 @@ func renderMacro(n *Node, ctx *mdCtx) string {
 		case title != "":
 			head = "**" + title + "**"
 		}
-		body := firstNonEmpty(rich(), plain)
+		body := cmp.Or(rich(), plain)
 		inner := body
 		if head != "" {
 			if body != "" {
@@ -896,7 +888,7 @@ func renderMacro(n *Node, ctx *mdCtx) string {
 		if title == "" {
 			title = "Details"
 		}
-		body := firstNonEmpty(rich(), plain)
+		body := cmp.Or(rich(), plain)
 		return "<details>\n<summary>" + title + "</summary>\n\n" + body + "\n\n</details>"
 
 	case "status":
@@ -909,7 +901,7 @@ func renderMacro(n *Node, ctx *mdCtx) string {
 		if key := params["key"]; key != "" {
 			return "[" + key + "](" + ctx.Site + "/browse/" + url.PathEscape(key) + ")"
 		}
-		if q := firstNonEmpty(params["jqlquery"], params["jql"]); q != "" {
+		if q := cmp.Or(params["jqlquery"], params["jql"]); q != "" {
 			return "<!-- Jira issues macro: " + q + " -->"
 		}
 		return "<!-- Jira issues macro -->"
@@ -919,7 +911,7 @@ func renderMacro(n *Node, ctx *mdCtx) string {
 		for _, c := range n.Children {
 			if IsElement(c, "ac:parameter") && strings.ToLower(c.Attr("ac:name")) == "user" {
 				if u := FindChild(c, "ri:user"); u != nil {
-					id := firstNonEmpty(u.Attr("ri:account-id"), u.Attr("ri:userkey"))
+					id := cmp.Or(u.Attr("ri:account-id"), u.Attr("ri:userkey"))
 					if name, ok := ctx.Users[id]; ok && name != "" {
 						return "@" + name
 					}
@@ -933,7 +925,7 @@ func renderMacro(n *Node, ctx *mdCtx) string {
 		return rich()
 
 	case "include", "excerpt-include":
-		return "<!-- included content: " + firstNonEmpty(params["0"], params["page"], "another page") + " -->"
+		return "<!-- included content: " + cmp.Or(params["0"], params["page"], "another page") + " -->"
 
 	default:
 		if body := rich(); body != "" {

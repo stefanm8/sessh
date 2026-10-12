@@ -8,11 +8,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"runtime"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -40,7 +41,6 @@ func Validate(p Plugin) error {
 var (
 	mu         sync.Mutex
 	registered = map[string]Plugin{}
-	order      []string
 )
 
 // Register adds a plugin. Called from init(); panics on a duplicate name,
@@ -53,17 +53,14 @@ func Register(p Plugin) {
 		panic(fmt.Sprintf("plugin %q registered twice", name))
 	}
 	registered[name] = p
-	order = append(order, name)
 }
 
 // All returns every registered plugin, sorted by name.
 func All() []Plugin {
 	mu.Lock()
 	defer mu.Unlock()
-	names := append([]string(nil), order...)
-	sort.Strings(names)
-	out := make([]Plugin, 0, len(names))
-	for _, n := range names {
+	out := make([]Plugin, 0, len(registered))
+	for _, n := range slices.Sorted(maps.Keys(registered)) {
 		out = append(out, registered[n])
 	}
 	return out
@@ -325,4 +322,19 @@ func ProfileFor(owner Plugin) session.Profile {
 	p := owner.Profile()
 	p.Name = session.ResolveProfileName(owner.Name(), globalFlags.Profile, p.Name)
 	return p
+}
+
+// ExitError lets a command choose the process exit code without knowing
+// anything about the process. `bitbucket pr checks` is a CI gate and follows
+// gh's 0/1/8 convention this way.
+type ExitError struct{ Code int }
+
+func (e *ExitError) Error() string { return fmt.Sprintf("exit status %d", e.Code) }
+
+// Exit returns an error carrying an exit code, or nil for 0.
+func Exit(code int) error {
+	if code == 0 {
+		return nil
+	}
+	return &ExitError{Code: code}
 }

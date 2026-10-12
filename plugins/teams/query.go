@@ -25,8 +25,7 @@ import (
 // "nothing matched your filter" and "that id does not exist" are different
 // answers and must not share a code.
 
-// The daemon and message reader coordinate over the capture control socket.
-func queryCommands(_ *Teams) []*cobra.Command {
+func queryCommands() []*cobra.Command {
 	cmds := []*cobra.Command{
 		messagesCommand(),
 		searchCommand(),
@@ -182,7 +181,24 @@ func anyChanged(cmd *cobra.Command, names ...string) bool {
 type loadedRows struct {
 	rows      []*Message
 	directory *Directory
-	path      string
+}
+
+type activityRange struct {
+	first, last int64
+	seen        bool
+}
+
+func (r *activityRange) add(ms int64, ok bool) {
+	if !ok {
+		return
+	}
+	if !r.seen || ms < r.first {
+		r.first = ms
+	}
+	if !r.seen || ms > r.last {
+		r.last = ms
+	}
+	r.seen = true
 }
 
 // load resolves the data file, builds the predicate and streams the survivors.
@@ -234,7 +250,7 @@ func (f *queryFlags) load(cmd *cobra.Command) (*loadedRows, error) {
 		fmt.Fprintf(os.Stderr, "[read] %d current messages (%d physical records), %d malformed line(s) skipped, %d matched\n",
 			scan.Total, scan.Physical, scan.Bad, len(rows))
 	}
-	return &loadedRows{rows: rows, directory: dir, path: path}, nil
+	return &loadedRows{rows: rows, directory: dir}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +465,7 @@ this week" rather than "who has ever posted".`,
 			if err != nil {
 				return fail(2, "%v", err)
 			}
-			order := firstNonEmpty(f.order, "desc")
+			order := cmp.Or(f.order, "desc")
 			if order != "asc" && order != "desc" {
 				return fail(2, "invalid --order %q. Expected: asc or desc", f.order)
 			}
@@ -460,13 +476,12 @@ this week" rather than "who has ever posted".`,
 			}
 
 			type group struct {
+				activityRange
 				sender        string
 				authorMRI     string
 				authorStatus  string
 				messages      int
 				conversations map[string]struct{}
-				first, last   int64
-				seen          bool
 			}
 			groups := map[string]*group{}
 			for _, m := range loaded.rows {
@@ -486,15 +501,7 @@ this week" rather than "who has ever posted".`,
 				if m.ConversationID != "" {
 					g.conversations[m.ConversationID] = struct{}{}
 				}
-				if t, ok := MessageTimeMS(m); ok {
-					if !g.seen || t < g.first {
-						g.first = t
-					}
-					if !g.seen || t > g.last {
-						g.last = t
-					}
-					g.seen = true
-				}
+				g.add(MessageTimeMS(m))
 			}
 
 			if f.count {
@@ -591,11 +598,10 @@ threads have never been opened, so it doubles as a discovery command.`,
 			}
 
 			type group struct {
-				id          string
-				count       int
-				first, last int64
-				seen        bool
-				senders     map[string]string
+				activityRange
+				id      string
+				count   int
+				senders map[string]string
 			}
 			groups := map[string]*group{}
 			at := func(id string) *group {
@@ -607,18 +613,10 @@ threads have never been opened, so it doubles as a discovery command.`,
 				return g
 			}
 			for _, m := range loaded.rows {
-				g := at(firstNonEmpty(m.ConversationID, "(unresolved conversation)"))
+				g := at(cmp.Or(m.ConversationID, "(unresolved conversation)"))
 				g.count++
 				g.senders[authorGroupKey(m)] = authorLabel(m)
-				if t, ok := MessageTimeMS(m); ok {
-					if !g.seen || t < g.first {
-						g.first = t
-					}
-					if !g.seen || t > g.last {
-						g.last = t
-					}
-					g.seen = true
-				}
+				g.add(MessageTimeMS(m))
 			}
 			if !anyChanged(cmd, "conversation", "sender", "since", "until", "type", "grep", "capture-source") {
 				for id := range loaded.directory.Map {
@@ -636,21 +634,17 @@ threads have never been opened, so it doubles as a discovery command.`,
 			rows := make([]convRow, 0, len(groups))
 			for _, g := range groups {
 				meta := loaded.directory.Map[g.id]
-				title := "(unknown)"
-				var kind, channel, team, teamID string
+				if meta == nil {
+					meta = &Conversation{}
+				}
+				title := cmp.Or(meta.Name(), "(unknown)")
 				participantMap := map[string]string{}
-				if meta != nil {
-					if n := meta.Name(); n != "" {
-						title = n
+				for i, name := range meta.Members {
+					key := "name:" + strings.ToLower(name)
+					if i < len(meta.MemberMRIs) && meta.MemberMRIs[i] != "" {
+						key = "mri:" + strings.ToLower(meta.MemberMRIs[i])
 					}
-					kind, channel, team, teamID = meta.KindOrType(), meta.ChannelName, meta.TeamName, meta.TeamID
-					for i, name := range meta.Members {
-						key := "name:" + strings.ToLower(name)
-						if i < len(meta.MemberMRIs) && meta.MemberMRIs[i] != "" {
-							key = "mri:" + strings.ToLower(meta.MemberMRIs[i])
-						}
-						participantMap[key] = name
-					}
+					participantMap[key] = name
 				}
 				// A roster can be incomplete in Teams' cache. Always union it
 				// with every stable author identity actually observed speaking.
@@ -666,7 +660,7 @@ threads have never been opened, so it doubles as a discovery command.`,
 				// anything captured, for a thread that was listed but never
 				// scrolled — take whichever is later.
 				last, lastOK := g.last, g.seen
-				if metaLast, ok := metadataTimeMS(metaLastTime(meta)); ok && (!lastOK || metaLast > last) {
+				if metaLast, ok := metadataTimeMS(meta.LastMessageTimeUTC); ok && (!lastOK || metaLast > last) {
 					last, lastOK = metaLast, true
 				}
 				rows = append(rows, convRow{
@@ -674,11 +668,11 @@ threads have never been opened, so it doubles as a discovery command.`,
 					rec: record{
 						{"conversationId", g.id},
 						{"title", title},
-						{"type", nullable(metaType(meta))},
-						{"kind", nullable(kind)},
-						{"channelName", nullable(channel)},
-						{"teamId", nullable(teamID)},
-						{"teamName", nullable(team)},
+						{"type", nullable(meta.Type)},
+						{"kind", nullable(meta.KindOrType())},
+						{"channelName", nullable(meta.ChannelName)},
+						{"teamId", nullable(meta.TeamID)},
+						{"teamName", nullable(meta.TeamName)},
 						{"messages", g.count},
 						{"senders", len(g.senders)},
 						{"participants", participants},
@@ -736,20 +730,6 @@ threads have never been opened, so it doubles as a discovery command.`,
 	return cmd
 }
 
-func metaLastTime(c *Conversation) any {
-	if c == nil {
-		return nil
-	}
-	return c.LastMessageTimeUTC
-}
-
-func metaType(c *Conversation) string {
-	if c == nil {
-		return ""
-	}
-	return c.Type
-}
-
 // compareTitles orders case-insensitively first, the way a human reading the
 // list expects, and falls back to byte order so the result is still total.
 func compareTitles(a, b string) int {
@@ -791,42 +771,29 @@ one-command answer to "what happened today, and where".`,
 
 			byType, byConv, byDay := counter{}, counter{}, counter{}
 			bySender := authorCounter{}
-			var first, last int64
-			var seen bool
+			var activity activityRange
 			for _, m := range loaded.rows {
-				byType.bump(firstNonEmpty(m.MessageType.String(), "(none)"))
+				byType.bump(cmp.Or(m.MessageType.String(), "(none)"))
 				bySender.bump(m)
-				byConv.bump(firstNonEmpty(m.ConversationID, "(unresolved conversation)"))
+				byConv.bump(cmp.Or(m.ConversationID, "(unresolved conversation)"))
 				t, ok := MessageTimeMS(m)
 				byDay.bump(DayKey(t, ok))
-				if ok {
-					if !seen || t < first {
-						first = t
-					}
-					if !seen || t > last {
-						last = t
-					}
-					seen = true
-				}
+				activity.add(t, ok)
 			}
 
 			convRows := make([]record, 0, len(byConv))
 			for _, r := range byConv.ranked() {
 				meta := loaded.directory.Map[r.key]
-				title, kind, channel, team, teamID := "(unknown)", "", "", "", ""
-				if meta != nil {
-					if n := meta.Name(); n != "" {
-						title = n
-					}
-					kind, channel, team, teamID = meta.KindOrType(), meta.ChannelName, meta.TeamName, meta.TeamID
+				if meta == nil {
+					meta = &Conversation{}
 				}
 				convRows = append(convRows, record{
 					{"conversationId", r.key},
-					{"title", title},
-					{"kind", nullable(kind)},
-					{"channelName", nullable(channel)},
-					{"teamId", nullable(teamID)},
-					{"teamName", nullable(team)},
+					{"title", cmp.Or(meta.Name(), "(unknown)")},
+					{"kind", nullable(meta.KindOrType())},
+					{"channelName", nullable(meta.ChannelName)},
+					{"teamId", nullable(meta.TeamID)},
+					{"teamName", nullable(meta.TeamName)},
 					{"count", r.count},
 				})
 			}
@@ -834,8 +801,8 @@ one-command answer to "what happened today, and where".`,
 			result := record{
 				{"total", len(loaded.rows)},
 				{"range", record{
-					{"first", nullable(ToISO(first, seen))},
-					{"last", nullable(ToISO(last, seen))},
+					{"first", nullable(ToISO(activity.first, activity.seen))},
+					{"last", nullable(ToISO(activity.last, activity.seen))},
 				}},
 				{"byType", byType.ranked().records("type")},
 				{"bySender", bySender.ranked().records()},
@@ -851,7 +818,7 @@ one-command answer to "what happened today, and where".`,
 				fmt.Println(string(b))
 				return nil
 			}
-			fmt.Println(renderStatsText(len(loaded.rows), first, last, seen,
+			fmt.Println(renderStatsText(len(loaded.rows), activity.first, activity.last, activity.seen,
 				byType.ranked(), bySender.ranked().textTallies(), byConv.ranked(), byDay.byKey(), loaded.directory))
 			return nil
 		},
@@ -969,13 +936,6 @@ func (t tallies) records(keyName string) []record {
 	return out
 }
 
-func (t tallies) top(n int) tallies {
-	if len(t) > n {
-		return t[:n]
-	}
-	return t
-}
-
 func renderStatsText(total int, first, last int64, seen bool,
 	byType, bySender, byConv, byDay tallies, dir *Directory) string {
 	section := func(title string, rows tallies, label func(tally) string) string {
@@ -1007,9 +967,9 @@ func renderStatsText(total int, first, last int64, seen bool,
 		"",
 		section("By type:", byType, self),
 		"",
-		section("By sender (top 15):", bySender.top(15), self),
+		section("By sender (top 15):", bySender[:min(15, len(bySender))], self),
 		"",
-		section("By conversation (top 15):", byConv.top(15), title),
+		section("By conversation (top 15):", byConv[:min(15, len(byConv))], title),
 		"",
 		section("By day:", byDay, self),
 	}, "\n")

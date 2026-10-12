@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sync"
 	"time"
@@ -616,7 +617,7 @@ func (c *rpcClient) Do(ctx context.Context, req *http.Request) (*http.Response, 
 		hdr.Set(k, v)
 	}
 	outReq := req.Clone(ctx)
-	if u, err := parseURL(r.URL); err == nil && r.URL != "" {
+	if u, err := url.Parse(r.URL); err == nil && r.URL != "" {
 		outReq.URL = u
 	}
 	return &http.Response{

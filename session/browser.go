@@ -16,8 +16,6 @@ import (
 	"github.com/mxschmitt/playwright-go"
 )
 
-func jsonUnmarshal(b []byte, v any) error { return json.Unmarshal(b, v) }
-
 // browserSession is the in-process implementation: a Chromium persistent
 // context plus one page.
 //
@@ -48,7 +46,7 @@ func (s *browserSession) Do(ctx context.Context, req *http.Request) (*http.Respo
 	ctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(req.Context(), cancel)
 	defer func() { stop(); cancel() }()
-	url := ResolveAgainst(s.profile.Origin, req.URL.String())
+	requestURL := ResolveAgainst(s.profile.Origin, req.URL.String())
 
 	headers := map[string]string{}
 	for k := range req.Header {
@@ -81,7 +79,7 @@ func (s *browserSession) Do(ctx context.Context, req *http.Request) (*http.Respo
 	}
 	done := make(chan result)
 	go func() {
-		res, err := s.ctxt.Request().Fetch(url, opts)
+		res, err := s.ctxt.Request().Fetch(requestURL, opts)
 		select {
 		case done <- result{res, err}:
 		case <-ctx.Done():
@@ -112,12 +110,12 @@ func (s *browserSession) Do(ctx context.Context, req *http.Request) (*http.Respo
 	finalURL := res.URL()
 
 	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		return nil, &AuthError{Profile: s.profile.Name, Status: status, URL: url, Detail: fmt.Sprintf(
+		return nil, &AuthError{Profile: s.profile.Name, Status: status, URL: requestURL, Detail: fmt.Sprintf(
 			"not authenticated (HTTP %d) for %s. Run: sessh auth login --profile %s",
 			status, s.profile.Origin, s.profile.Name)}
 	}
 	if IsLoginURL(finalURL) {
-		return nil, &AuthError{Profile: s.profile.Name, URL: url, Detail: fmt.Sprintf(
+		return nil, &AuthError{Profile: s.profile.Name, URL: requestURL, Detail: fmt.Sprintf(
 			"session expired (redirected to %s). Run: sessh auth login --profile %s",
 			finalURL, s.profile.Name)}
 	}
@@ -127,7 +125,7 @@ func (s *browserSession) Do(ctx context.Context, req *http.Request) (*http.Respo
 		hdr.Set(k, v)
 	}
 	outReq := req.Clone(req.Context())
-	if u, err := parseURL(finalURL); err == nil {
+	if u, err := url.Parse(finalURL); err == nil {
 		outReq.URL = u
 	}
 	return &http.Response{

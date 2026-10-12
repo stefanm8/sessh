@@ -3,7 +3,6 @@ package confluence
 import (
 	"strconv"
 	"strings"
-	"unicode/utf8"
 )
 
 // A small, tolerant XHTML/XML parser.
@@ -355,5 +354,3 @@ func ChildrenNamed(n *Node, name string) []*Node {
 	}
 	return out
 }
-
-func runeLen(s string) int { return utf8.RuneCountInString(s) }

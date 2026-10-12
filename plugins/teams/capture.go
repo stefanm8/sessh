@@ -2,14 +2,16 @@ package teams
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -980,7 +982,7 @@ func explicitTeamNames(raws []json.RawMessage) map[string]string {
 		if json.Unmarshal(raw, &t) != nil {
 			continue
 		}
-		name := firstNonEmpty(strings.TrimSpace(t.TeamName.String()), strings.TrimSpace(t.DisplayName.String()),
+		name := cmp.Or(strings.TrimSpace(t.TeamName.String()), strings.TrimSpace(t.DisplayName.String()),
 			strings.TrimSpace(t.Name.String()), strings.TrimSpace(t.Title.String()))
 		if name == "" {
 			continue
@@ -1147,7 +1149,7 @@ func normalizeConversation(in idbConversation, teamNames map[string]string, nowI
 		// Channel names do not live in chatTitle. Teams keeps them under
 		// threadProperties.topic (or topicThreadTopic), and missing that is why
 		// channel names once vanished from the sidecar.
-		topic = firstNonEmpty(clean(in.ThreadProperties.TopicThreadTopic), clean(in.ThreadProperties.Topic))
+		topic = cmp.Or(clean(in.ThreadProperties.TopicThreadTopic), clean(in.ThreadProperties.Topic))
 		threadType = clean(in.ThreadProperties.ThreadType)
 	}
 
@@ -1157,8 +1159,8 @@ func normalizeConversation(in idbConversation, teamNames map[string]string, nowI
 		ID:              id,
 		Type:            typ,
 		Kind:            kind,
-		Title:           firstNonEmpty(topic, longTitle, shortTitle),
-		DisplayName:     firstNonEmpty(topic, shortTitle, longTitle),
+		Title:           cmp.Or(topic, longTitle, shortTitle),
+		DisplayName:     cmp.Or(topic, shortTitle, longTitle),
 		ShortTitle:      shortTitle,
 		LongTitle:       longTitle,
 		Members:         members,
@@ -1281,7 +1283,7 @@ func jsonString(v any) string {
 	case float64:
 		return strconv.FormatFloat(t, 'f', -1, 64)
 	default:
-		b, err := marshalJSON(v)
+		b, err := jsonBytes(v, false)
 		if err != nil {
 			return ""
 		}
@@ -1342,7 +1344,7 @@ func normalizeMessage(raw map[string]any, source string) *Message {
 	}
 	// Keep <, > and & readable in the provider payload instead of using
 	// encoding/json's default HTML escaping.
-	if b, err := marshalJSON(raw); err == nil {
+	if b, err := jsonBytes(raw, false); err == nil {
 		m.Raw = b
 	}
 	normalizeMessageAttribution(m, raw, nil)
@@ -1377,7 +1379,7 @@ func extractInto(root any, source string, acc *[]captured, depth int) {
 		// wrappers nest further messages inside one. Keys are visited in sorted
 		// order only because Go randomizes map iteration, and a payload should
 		// extract identically on every run.
-		for _, k := range sortedObjectKeys(v) {
+		for _, k := range slices.Sorted(maps.Keys(v)) {
 			switch child := v[k].(type) {
 			case map[string]any:
 				extractInto(child, source, acc, depth+1)
@@ -1386,15 +1388,6 @@ func extractInto(root any, source string, acc *[]captured, depth int) {
 			}
 		}
 	}
-}
-
-func sortedObjectKeys(m map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // ---------------------------------------------------------------------------
@@ -1417,21 +1410,9 @@ func decodeJSONAny(b []byte) (any, error) {
 	return out, nil
 }
 
-// marshalJSON encodes without HTML escaping, so message bodies and raw payloads
-// read on disk the way Teams sent them rather than as \u003c soup.
-func marshalJSON(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), nil
-}
-
 // marshalJSONL is one line of a .jsonl file.
 func marshalJSONL(v any) ([]byte, error) {
-	b, err := marshalJSON(v)
+	b, err := jsonBytes(v, false)
 	if err != nil {
 		return nil, err
 	}

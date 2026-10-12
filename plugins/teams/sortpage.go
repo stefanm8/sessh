@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strconv"
@@ -19,24 +20,9 @@ var messageSortFields = []string{"time", "sender", "conversation", "type", "capt
 
 // sortValue is one row's comparison key: a number, a string, or absent.
 type sortValue struct {
-	num   int64
-	text  string
-	isNum bool
-	ok    bool
-}
-
-func numKey(n int64, ok bool) sortValue {
-	if !ok {
-		return sortValue{}
-	}
-	return sortValue{num: n, isNum: true, ok: true}
-}
-
-func textKey(s string) sortValue {
-	if s == "" {
-		return sortValue{}
-	}
-	return sortValue{text: s, ok: true}
+	num  int64
+	text string
+	ok   bool
 }
 
 // messageSortKey extracts the comparable key for a sort field. An empty string
@@ -44,34 +30,23 @@ func textKey(s string) sortValue {
 // count as missing — which is also the more useful reading, since "missing"
 // sorts last rather than heading an ascending list.
 func messageSortKey(m *Message, field string) sortValue {
+	var key sortValue
 	switch field {
 	case "captured":
 		if t, ok := parseAnyTime(m.CapturedAt); ok {
-			return numKey(t.UnixMilli(), true)
+			key.num, key.ok = t.UnixMilli(), true
 		}
-		return sortValue{}
 	case "sender":
-		return textKey(m.Sender)
+		key.text = m.Sender
 	case "conversation":
-		return textKey(firstNonEmpty(m.ConversationTitle, m.ConversationID))
+		key.text = cmp.Or(m.ConversationTitle, m.ConversationID)
 	case "type":
-		return textKey(m.MessageType.String())
+		key.text = m.MessageType.String()
 	default:
-		return numKey(MessageTimeMS(m))
+		key.num, key.ok = MessageTimeMS(m)
 	}
-}
-
-func compareSortValues(a, b sortValue) int {
-	if a.isNum && b.isNum {
-		switch {
-		case a.num < b.num:
-			return -1
-		case a.num > b.num:
-			return 1
-		}
-		return 0
-	}
-	return strings.Compare(a.text, b.text)
+	key.ok = key.ok || key.text != ""
+	return key
 }
 
 // sortMessages returns a newly ordered slice. Missing keys always sort last,
@@ -101,7 +76,7 @@ func sortMessages(rows []*Message, field, order string) []*Message {
 		case !a.key.ok && b.key.ok:
 			return 1
 		case a.key.ok:
-			if c := compareSortValues(a.key, b.key); c != 0 {
+			if c := cmp.Or(cmp.Compare(a.key.num, b.key.num), strings.Compare(a.key.text, b.key.text)); c != 0 {
 				return c * dir
 			}
 		}
@@ -144,7 +119,7 @@ type pageDefaults struct {
 func resolveSortPage(cmd *cobra.Command, f *queryFlags, d pageDefaults) (pagePlan, error) {
 	var plan pagePlan
 
-	plan.order = firstNonEmpty(f.order, d.order, "asc")
+	plan.order = cmp.Or(f.order, d.order, "asc")
 	if plan.order != "asc" && plan.order != "desc" {
 		return plan, fmt.Errorf("invalid --order %q. Expected: asc or desc", f.order)
 	}
@@ -153,7 +128,7 @@ func resolveSortPage(cmd *cobra.Command, f *queryFlags, d pageDefaults) (pagePla
 	if allowed == nil {
 		allowed = messageSortFields
 	}
-	plan.sort = firstNonEmpty(f.sort, d.sort, "time")
+	plan.sort = cmp.Or(f.sort, d.sort, "time")
 	if !slices.Contains(allowed, plan.sort) {
 		return plan, fmt.Errorf("invalid --sort %q. Expected one of: %s", plan.sort, strings.Join(allowed, ", "))
 	}

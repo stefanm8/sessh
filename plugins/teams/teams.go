@@ -169,7 +169,7 @@ directly. Other query commands stay local.
 browser open after you close the terminal. Use capture status, monitor, logs, and stop
 to manage it. A separate daemon is not needed.`,
 	}
-	cmd.AddCommand(queryCommands(t)...)
+	cmd.AddCommand(queryCommands()...)
 	cmd.AddCommand(backfillCommand())
 	cmd.AddCommand(captureCommand(t))
 	return cmd

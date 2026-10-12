@@ -1,8 +1,10 @@
 package confluence
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -38,25 +40,10 @@ func (e *apiErr) Error() string { return e.Msg }
 
 func statusOf(err error) int {
 	var e *apiErr
-	if ok := asAPIErr(err, &e); ok {
+	if errors.As(err, &e) {
 		return e.Status
 	}
 	return 0
-}
-
-func asAPIErr(err error, out **apiErr) bool {
-	for err != nil {
-		if e, ok := err.(*apiErr); ok {
-			*out = e
-			return true
-		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }
 
 func fromResponse(raw *session.Raw, path string) (json.RawMessage, error) {
@@ -84,7 +71,7 @@ func errText(payload json.RawMessage, status int, path string) string {
 	if json.Unmarshal(payload, &body) == nil {
 		var msgs []string
 		for _, e := range body.Errors {
-			if m := firstNonEmpty(e.Title, e.Detail, e.Message); m != "" {
+			if m := cmp.Or(e.Title, e.Detail, e.Message); m != "" {
 				msgs = append(msgs, m)
 			}
 		}
@@ -327,7 +314,7 @@ func normalizeSpace(raw json.RawMessage) *Space {
 	if json.Unmarshal(raw, &r) != nil {
 		return nil
 	}
-	desc := firstNonEmpty(r.Description.Plain.Value, r.Description.View.Value)
+	desc := cmp.Or(r.Description.Plain.Value, r.Description.View.Value)
 	home := idString(r.HomepageID)
 	if home == "" && r.Homepage != nil {
 		home = idString(r.Homepage.ID)
@@ -402,10 +389,10 @@ func normalizePage(raw json.RawMessage) *Page {
 		ID: idString(r.ID), Title: r.Title, Status: r.Status, Type: r.Type,
 		SpaceID: idString(r.SpaceID), SpaceKey: r.SpaceKey, ParentID: idString(r.ParentID),
 		Version:   r.Version.Number,
-		Updated:   firstNonEmpty(r.Version.CreatedAt, r.Version.When, r.History.LastUpdated.When),
-		UpdatedBy: firstNonEmpty(r.Version.By.DisplayName, r.History.LastUpdated.By.DisplayName),
-		AuthorID:  firstNonEmpty(r.AuthorID, r.Version.AuthorID),
-		CreatedAt: firstNonEmpty(r.CreatedAt, r.History.CreatedDate),
+		Updated:   cmp.Or(r.Version.CreatedAt, r.Version.When, r.History.LastUpdated.When),
+		UpdatedBy: cmp.Or(r.Version.By.DisplayName, r.History.LastUpdated.By.DisplayName),
+		AuthorID:  cmp.Or(r.AuthorID, r.Version.AuthorID),
+		CreatedAt: cmp.Or(r.CreatedAt, r.History.CreatedDate),
 		Links:     r.Links, Raw: raw,
 	}
 	if p.Type == "" {
@@ -804,10 +791,10 @@ func (c *Client) GetAttachments(ctx context.Context, id string, max int) ([]Atta
 		out = append(out, Attachment{
 			ID:           idString(a.ID),
 			Title:        a.Title,
-			MediaType:    firstNonEmpty(a.MediaType, a.Metadata.MediaType),
+			MediaType:    cmp.Or(a.MediaType, a.Metadata.MediaType),
 			Size:         size,
-			Updated:      firstNonEmpty(a.Version.CreatedAt, a.Version.When),
-			DownloadLink: firstNonEmpty(a.Links["download"], a.Links["webui"]),
+			Updated:      cmp.Or(a.Version.CreatedAt, a.Version.When),
+			DownloadLink: cmp.Or(a.Links["download"], a.Links["webui"]),
 		})
 	}
 	return out, nil
@@ -919,13 +906,13 @@ func normalizeHit(raw json.RawMessage) Hit {
 	}
 	return Hit{
 		ID:           idString(r.Content.ID),
-		Type:         firstNonEmpty(r.Content.Type, r.EntityType),
-		Title:        StripHL(firstNonEmpty(r.Title, r.Content.Title)),
-		Space:        StripHL(firstNonEmpty(r.ResultGlobalContainer.Title, r.Content.Space.Name)),
+		Type:         cmp.Or(r.Content.Type, r.EntityType),
+		Title:        StripHL(cmp.Or(r.Title, r.Content.Title)),
+		Space:        StripHL(cmp.Or(r.ResultGlobalContainer.Title, r.Content.Space.Name)),
 		SpaceKey:     r.Content.Space.Key,
 		Excerpt:      strings.TrimSpace(whitespaceRe.ReplaceAllString(StripHL(r.Excerpt), " ")),
-		URL:          firstNonEmpty(r.URL, r.Content.Links["webui"]),
-		LastModified: firstNonEmpty(r.LastModified, r.Content.Version.When),
+		URL:          cmp.Or(r.URL, r.Content.Links["webui"]),
+		LastModified: cmp.Or(r.LastModified, r.Content.Version.When),
 	}
 }
 
@@ -1047,14 +1034,14 @@ func (c *Client) ResolveRef(ctx context.Context, input string) (*Resolved, error
 		exactCQL += fmt.Sprintf(` AND space = "%s"`, EscapeCQL(space))
 	}
 	if exact, err := c.SearchContent(ctx, exactCQL, 5); err == nil && len(exact) > 0 {
-		return &Resolved{ID: exact[0].ID, Space: firstNonEmpty(exact[0].SpaceKey, space), Page: exact[0]}, nil
+		return &Resolved{ID: exact[0].ID, Space: cmp.Or(exact[0].SpaceKey, space), Page: exact[0]}, nil
 	}
 	hits, err := c.SearchText(ctx, title, space, "page", 5)
 	if err != nil {
 		return nil, err
 	}
 	if len(hits) > 0 && hits[0].ID != "" {
-		return &Resolved{ID: hits[0].ID, Space: firstNonEmpty(hits[0].SpaceKey, space)}, nil
+		return &Resolved{ID: hits[0].ID, Space: cmp.Or(hits[0].SpaceKey, space)}, nil
 	}
 
 	hint := ""

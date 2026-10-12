@@ -2,6 +2,7 @@ package teams
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -136,25 +137,7 @@ func nullable(s string) any {
 
 // decorateMessage is the canonical output shape of a message.
 func decorateMessage(m *Message, raw bool) record {
-	rec := record{
-		{"id", nullable(m.ID)},
-		{"time", nullable(ToISO(MessageTimeMS(m)))},
-		{"conversationId", nullable(m.ConversationID)},
-		{"conversationTitle", nullable(m.ConversationTitle)},
-		{"conversationType", nullable(m.ConversationType)},
-		{"channelName", nullable(m.ChannelName)},
-		{"teamId", nullable(m.TeamID)},
-		{"teamName", nullable(m.TeamName)},
-		{"sender", nullable(m.Sender)},
-		{"authorMRI", nullable(m.AuthorMRI)},
-		{"authorStatus", nullable(m.AuthorStatus)},
-		{"body", nullable(m.Body)},
-		{"contentType", nullable(m.ContentType)},
-		{"messageType", nullable(m.MessageType.String())},
-		{"source", nullable(m.Source)},
-		{"composeTime", nullable(m.ComposeTime.String())},
-		{"capturedAt", nullable(m.CapturedAt)},
-	}
+	rec := projectMessage(m, messageDefaultFields)
 	if raw && len(m.Raw) > 0 {
 		rec = append(rec, field{"raw", m.Raw})
 	}
@@ -206,6 +189,11 @@ func projectMessage(m *Message, fields []string) record {
 }
 
 var (
+	messageDefaultFields = []string{
+		"id", "time", "conversationId", "conversationTitle", "conversationType",
+		"channelName", "teamId", "teamName", "sender", "authorMRI", "authorStatus",
+		"body", "contentType", "messageType", "source", "composeTime", "capturedAt",
+	}
 	tableDefaultFields = []string{"timeLocal", "conversationTitle", "sender", "body"}
 	csvDefaultFields   = []string{"time", "conversationTitle", "sender", "conversationId", "messageType", "body"}
 	messageTruncate    = map[string]int{"conversationTitle": 36, "body": 70}
@@ -252,7 +240,7 @@ func renderMessages(rows []*Message, o renderOpts) (string, error) {
 	case formatText:
 		blocks := make([]string, len(rows))
 		for i, m := range rows {
-			where := firstNonEmpty(m.ConversationTitle, m.ConversationID, "(unknown conversation)")
+			where := cmp.Or(m.ConversationTitle, m.ConversationID, "(unknown conversation)")
 			who := authorLabel(m)
 			kind := ""
 			if t := m.MessageType.String(); t != "" {

@@ -136,10 +136,6 @@ func canonicalAuthorMRI(s string) string {
 	return "28:" + strings.TrimPrefix(strings.TrimPrefix(s, "28:"), "28:")
 }
 
-func isUserMRI(s string) bool {
-	return strings.HasPrefix(strings.ToLower(canonicalAuthorMRI(s)), "8:")
-}
-
 func cleanDisplayName(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" || rawDisplayNameRe.MatchString(s) || canonicalAuthorMRI(s) != "" {

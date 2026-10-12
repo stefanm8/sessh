@@ -186,7 +186,7 @@ func pagedValues(ctx context.Context, s session.Session, path, arrayKey string, 
 }
 
 // tokenValues implements enhanced search pagination for platform and software.
-func tokenValues(ctx context.Context, s session.Session, path, arrayKey string, limit int) ([]json.RawMessage, error) {
+func tokenValues(ctx context.Context, s session.Session, path string, limit int) ([]json.RawMessage, error) {
 	if err := validateLimit(limit); err != nil {
 		return nil, err
 	}
@@ -219,18 +219,12 @@ func tokenValues(ctx context.Context, s session.Session, path, arrayKey string, 
 		if err := json.Unmarshal(raw, &e); err != nil {
 			return nil, fmt.Errorf("invalid Jira search page: %w", err)
 		}
-		var obj map[string]json.RawMessage
-		_ = json.Unmarshal(raw, &obj)
-		v, ok := obj[arrayKey]
-		if !ok || len(v) == 0 || v[0] != '[' {
-			return nil, fmt.Errorf("Jira page is missing the %s array", arrayKey)
-		}
-		if err := json.Unmarshal(v, &e.Issues); err != nil {
-			return nil, err
+		if e.Issues == nil {
+			return nil, fmt.Errorf("Jira page is missing the issues array")
 		}
 		for _, v := range e.Issues {
 			if len(v) == 0 || v[0] != '{' {
-				return nil, fmt.Errorf("invalid object in Jira %s page", arrayKey)
+				return nil, fmt.Errorf("invalid object in Jira issues page")
 			}
 			items = append(items, v)
 			if limit > 0 && len(items) >= limit {

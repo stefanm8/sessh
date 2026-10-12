@@ -3,15 +3,12 @@ package session
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/mxschmitt/playwright-go"
 )
-
-func parseURL(s string) (*url.URL, error) { return url.Parse(s) }
 
 // A new profile inherits `default`: at creation we copy the
 // parent's *storage state* — cookies plus per-origin localStorage — and nothing

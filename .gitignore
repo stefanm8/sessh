@@ -31,7 +31,3 @@ node_modules/
 .vscode/
 *.swp
 *.swo
-
-# Keep release plans even when a user's global ignore excludes docs.
-!/docs/
-!/docs/*.md

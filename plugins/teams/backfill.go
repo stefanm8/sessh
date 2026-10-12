@@ -78,25 +78,11 @@ timestamped backup files. Rerunning is idempotent.`,
 }
 
 func runAttributionBackfill(path string, dryRun bool) (*attributionBackfillReport, error) {
-	f, err := os.Open(path)
+	snapshot, err := snapshotMessages(path, nil)
 	if err != nil {
 		return nil, err
 	}
-	limit, err := completeJSONLSize(f)
-	_ = f.Close()
-	if err != nil {
-		return nil, err
-	}
-
-	last := map[string]int{}
-	report := &attributionBackfillReport{DryRun: dryRun}
-	if err := scanMessagesTo(path, limit, func(m *Message, lineNo int) {
-		if m.ID != "" {
-			last[m.ID] = lineNo
-		}
-	}, func(int) { report.MalformedLines++ }); err != nil {
-		return nil, err
-	}
+	report := &attributionBackfillReport{DryRun: dryRun, MalformedLines: snapshot.stats.Bad}
 
 	dir := LoadConversations(path)
 	resolver := newIdentityResolver()
@@ -105,21 +91,18 @@ func runAttributionBackfill(path string, dryRun bool) (*attributionBackfillRepor
 	}
 	// Resolve against all current records before changing any one of them, so a
 	// name observed late in the file can repair an earlier MRI-only record.
-	if err := scanMessagesTo(path, limit, func(m *Message, lineNo int) {
-		if m.ID != "" && last[m.ID] != lineNo {
-			return
-		}
+	if err := snapshot.scan(func(m *Message) {
 		raw := rawObject(m.Raw)
 		normalizeMessageAttribution(m, raw, nil)
 		resolver.observeRaw(raw)
 		resolver.observe(m.AuthorMRI, m.Sender)
-	}, nil); err != nil {
+	}); err != nil {
 		return nil, err
 	}
 
 	if !dryRun {
 		stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
-		report.MessagesBackup, err = backupPrefix(path, limit, stamp)
+		report.MessagesBackup, err = backupPrefix(path, snapshot.limit, stamp)
 		if err != nil {
 			return nil, fmt.Errorf("backing up messages: %w", err)
 		}
@@ -147,11 +130,8 @@ func runAttributionBackfill(path string, dryRun bool) (*attributionBackfillRepor
 	}
 
 	var appendErr error
-	err = scanMessagesTo(path, limit, func(m *Message, lineNo int) {
+	err = snapshot.scan(func(m *Message) {
 		if appendErr != nil {
-			return
-		}
-		if m.ID != "" && last[m.ID] != lineNo {
 			return
 		}
 		report.SnapshotRecords++
@@ -225,7 +205,7 @@ func runAttributionBackfill(path string, dryRun bool) (*attributionBackfillRepor
 			return
 		}
 		report.RecordsAppended++
-	}, nil)
+	})
 	if err != nil {
 		return nil, err
 	}

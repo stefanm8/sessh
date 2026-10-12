@@ -2,6 +2,7 @@ package teams
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -119,48 +120,61 @@ type ScanResult struct {
 	Bad      int // malformed lines skipped
 }
 
-// StreamMessages calls onRecord for each valid line. onBad, when non-nil, is
-// called with the 1-based line number of each malformed line.
+// StreamMessages reads the latest complete record per message ID. onBad is
+// called with the 1-based line number of each malformed record.
 func StreamMessages(path string, onRecord func(*Message), onBad func(int)) (ScanResult, error) {
+	snapshot, err := snapshotMessages(path, onBad)
+	if err != nil {
+		return snapshot.stats, err
+	}
+	err = snapshot.scan(func(m *Message) {
+		recoverStoredAttribution(m)
+		snapshot.stats.Total++
+		onRecord(m)
+	})
+	return snapshot.stats, err
+}
+
+// Queries and attribution backfills use the same fixed byte boundary and
+// last-record-wins index. Concurrent appends cannot change this snapshot.
+type messageSnapshot struct {
+	path  string
+	limit int64
+	last  map[string]int
+	stats ScanResult
+}
+
+func snapshotMessages(path string, onBad func(int)) (*messageSnapshot, error) {
+	s := &messageSnapshot{path: path, last: map[string]int{}}
 	f, err := os.Open(path)
 	if err != nil {
-		return ScanResult{}, fmt.Errorf("cannot open %s: %w", path, err)
+		return s, fmt.Errorf("cannot open %s: %w", path, err)
 	}
-	limit, err := completeJSONLSize(f)
+	s.limit, err = completeJSONLSize(f)
 	_ = f.Close()
 	if err != nil {
-		return ScanResult{}, fmt.Errorf("reading %s: %w", path, err)
+		return s, fmt.Errorf("reading %s: %w", path, err)
 	}
-
-	// Attribution backfills are append-only upserts: a later record with the
-	// same id supersedes an older one. First remember the last line for each id,
-	// then stream only those current records. Memory remains O(message ids), not
-	// O(payload bytes), and the fixed byte boundary excludes concurrent appends.
-	last := map[string]int{}
-	var res ScanResult
-	err = scanMessagesTo(path, limit, func(m *Message, lineNo int) {
-		res.Physical++
+	err = scanMessagesTo(path, s.limit, func(m *Message, lineNo int) {
+		s.stats.Physical++
 		if m.ID != "" {
-			last[m.ID] = lineNo
+			s.last[m.ID] = lineNo
 		}
 	}, func(lineNo int) {
-		res.Bad++
+		s.stats.Bad++
 		if onBad != nil {
 			onBad(lineNo)
 		}
 	})
-	if err != nil {
-		return res, err
-	}
-	err = scanMessagesTo(path, limit, func(m *Message, lineNo int) {
-		if m.ID != "" && last[m.ID] != lineNo {
-			return
+	return s, err
+}
+
+func (s *messageSnapshot) scan(onRecord func(*Message)) error {
+	return scanMessagesTo(s.path, s.limit, func(m *Message, lineNo int) {
+		if m.ID == "" || s.last[m.ID] == lineNo {
+			onRecord(m)
 		}
-		recoverStoredAttribution(m)
-		res.Total++
-		onRecord(m)
 	}, nil)
-	return res, err
 }
 
 func completeJSONLSize(f *os.File) (int64, error) {
@@ -267,20 +281,12 @@ func (c *Conversation) Name() string {
 		}
 		return c.ChannelName + " [team unresolved: " + compactConversationID(c.ID) + "]"
 	}
-	for _, s := range []string{c.DisplayName, c.Title, c.ShortTitle, c.LongTitle} {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
+	return cmp.Or(c.DisplayName, c.Title, c.ShortTitle, c.LongTitle)
 }
 
 // KindOrType is the normalized conversation kind, falling back to the raw type.
 func (c *Conversation) KindOrType() string {
-	if c.Kind != "" {
-		return c.Kind
-	}
-	return c.Type
+	return cmp.Or(c.Kind, c.Type)
 }
 
 // Directory is the loaded sidecar. It degrades to empty (id-only mode) when the
@@ -333,11 +339,11 @@ func LoadConversations(messagesPath string) *Directory {
 				c.LongTitle = raw.ChatTitle.Long
 			}
 			if c.Title == "" {
-				c.Title = firstNonEmpty(raw.ChatTitle.Short, raw.ChatTitle.Long)
+				c.Title = cmp.Or(raw.ChatTitle.Short, raw.ChatTitle.Long)
 			}
 		}
 		if c.Title == "" {
-			c.Title = firstNonEmpty(c.ShortTitle, c.LongTitle)
+			c.Title = cmp.Or(c.ShortTitle, c.LongTitle)
 		}
 		if c.DisplayName == "" {
 			c.DisplayName = c.Title
@@ -346,7 +352,7 @@ func LoadConversations(messagesPath string) *Directory {
 		if len(c.Members) == 0 && raw.ChatTitle != nil {
 			for _, m := range raw.ChatTitle.Members {
 				mri := canonicalAuthorMRI(m.MRI)
-				if n := firstNonEmpty(cleanDisplayName(m.DisplayName), cleanDisplayName(m.Name), mri); n != "" {
+				if n := cmp.Or(cleanDisplayName(m.DisplayName), cleanDisplayName(m.Name), mri); n != "" {
 					c.Members = append(c.Members, n)
 					// Keep the slices index-aligned even for legacy members that
 					// carry a display name but no stable MRI.
@@ -386,7 +392,7 @@ func decodeMembers(raws []json.RawMessage) ([]string, []string) {
 		}
 		if json.Unmarshal(raw, &m) == nil {
 			mri := canonicalAuthorMRI(m.MRI)
-			if n := firstNonEmpty(cleanDisplayName(m.DisplayName), cleanDisplayName(m.Name), mri); n != "" {
+			if n := cmp.Or(cleanDisplayName(m.DisplayName), cleanDisplayName(m.Name), mri); n != "" {
 				names = append(names, n)
 				mris = append(mris, mri)
 			}
@@ -425,21 +431,4 @@ func compactConversationID(id string) string {
 		return id
 	}
 	return id[:15] + "…"
-}
-
-// EnrichAll enriches a slice in place.
-func (d *Directory) EnrichAll(rows []*Message) []*Message {
-	for _, m := range rows {
-		d.Enrich(m)
-	}
-	return rows
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

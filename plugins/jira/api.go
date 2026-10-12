@@ -117,7 +117,7 @@ func SearchIssues(ctx context.Context, s session.Session, jql string, max int, f
 		fields = DefaultIssueFields
 	}
 	q := url.Values{"jql": {jql}, "fields": {strings.Join(fields, ",")}}
-	raws, err := tokenValues(ctx, s, "/rest/api/3/search/jql?"+q.Encode(), "issues", max)
+	raws, err := tokenValues(ctx, s, "/rest/api/3/search/jql?"+q.Encode(), max)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -135,9 +135,6 @@ func SearchIssues(ctx context.Context, s session.Session, jql string, max int, f
 	return items, raws, nil
 }
 
-func GetIssue(ctx context.Context, s session.Session, key string) (*Issue, json.RawMessage, error) {
-	return GetIssueFields(ctx, s, key, nil)
-}
 func GetIssueFields(ctx context.Context, s session.Session, key string, fields []string) (*Issue, json.RawMessage, error) {
 	if len(fields) == 0 {
 		fields = []string{"summary", "status", "issuetype", "priority", "assignee", "reporter", "created", "updated", "description", "labels", "parent"}

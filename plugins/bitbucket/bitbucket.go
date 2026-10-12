@@ -6,6 +6,7 @@
 package bitbucket
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -94,17 +95,8 @@ func whoami(ctx context.Context, s session.Session) (session.Identity, error) {
 	return session.Identity{
 		AccountID:   u.AccountID,
 		DisplayName: u.DisplayName,
-		Username:    firstNonEmpty(u.Nickname, u.Username),
+		Username:    cmp.Or(u.Nickname, u.Username),
 	}, nil
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
 
 // apiPath turns "/repositories/x" into the same-origin API path.

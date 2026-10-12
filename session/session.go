@@ -10,8 +10,10 @@ package session
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -33,12 +35,7 @@ func (i Identity) Empty() bool {
 
 // Name is the friendliest label available.
 func (i Identity) Name() string {
-	for _, s := range []string{i.DisplayName, i.Username, i.Email, i.AccountID} {
-		if s != "" {
-			return s
-		}
-	}
-	return ""
+	return cmp.Or(i.DisplayName, i.Username, i.Email, i.AccountID)
 }
 
 // Cookie is a browser cookie, reduced to the fields a Verify function needs.
@@ -190,4 +187,65 @@ func IsLoginURL(rawurl string) bool {
 func loginPath(path string) bool {
 	return path == "/login" || strings.HasPrefix(path, "/login/") ||
 		path == "/login.action" || path == "/account/signin" || strings.HasPrefix(path, "/account/signin/")
+}
+
+// RememberIdentity retains a successful verification's identity for the
+// current session, avoiding a second identity request for command metadata.
+// It never replaces live authentication checks or stores identity on disk.
+func RememberIdentity(s Session, id Identity) {
+	if r, ok := s.(interface{ RememberIdentity(Identity) }); ok {
+		r.RememberIdentity(id)
+	}
+}
+
+func (o observer) RememberIdentity(id Identity) { RememberIdentity(o.Session, id) }
+
+// ErrAuth is the sentinel every "you are not logged in" condition surfaces as:
+// a 401/403, a redirect to a login origin, or a Verify that could not mint a
+// session. cmd/sessh turns it into `run: sessh auth login <plugin>` rather than a
+// stack trace.
+var ErrAuth = errors.New("not authenticated")
+
+// AuthError carries the profile that needs logging in, so the top level can
+// name the right command.
+type AuthError struct {
+	Profile string
+	Detail  string
+	// Status and URL identify the response that reported the failure: 401 or
+	// 403, or 0 for a redirect to a login page. Both are empty when a Verify
+	// hook reported it.
+	Status int
+	URL    string
+}
+
+func (e *AuthError) Error() string {
+	if e.Detail == "" {
+		return fmt.Sprintf("not authenticated for profile %q", e.Profile)
+	}
+	return e.Detail
+}
+
+func (e *AuthError) Unwrap() error { return ErrAuth }
+
+// Authf builds an ErrAuth-wrapped error.
+func Authf(profile, format string, args ...any) error {
+	return &AuthError{Profile: profile, Detail: fmt.Sprintf(format, args...)}
+}
+
+// IsAuth reports whether err is (or wraps) ErrAuth.
+func IsAuth(err error) bool { return errors.Is(err, ErrAuth) }
+
+// ErrBusy is returned when a profile is locked by another process and no
+// socket was available to route through.
+type ErrBusy struct {
+	Profile string
+	Holder  string
+	PID     int // the holder's process, or 0 when unknown
+}
+
+func (e *ErrBusy) Error() string {
+	if e.Holder != "" {
+		return fmt.Sprintf("profile %q is busy (held by %s)", e.Profile, e.Holder)
+	}
+	return fmt.Sprintf("profile %q is busy", e.Profile)
 }

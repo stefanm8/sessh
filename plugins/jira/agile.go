@@ -163,7 +163,7 @@ func agileIssuesCommand(j *Jira, kind string) *cobra.Command {
 			// The old Agile issue endpoints are deprecated. Enhanced Software
 			// endpoints use token pagination and preserve board/sprint ordering.
 			q := url.Values{"fields": {strings.Join(DefaultIssueFields, ",")}}
-			return tokenValues(ctx, s, "/rest/software/1.0/"+kind+"/"+args[0]+"/issue?"+q.Encode(), "issues", limit)
+			return tokenValues(ctx, s, "/rest/software/1.0/"+kind+"/"+args[0]+"/issue?"+q.Encode(), limit)
 		}, func(raw json.RawMessage) ([]string, error) {
 			var issue Issue
 			if err := json.Unmarshal(raw, &issue); err != nil {
