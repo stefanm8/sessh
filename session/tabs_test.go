@@ -106,8 +106,8 @@ func TestWarmPageLeaseReusesCallerOrigin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer releaseSecond()
-	if second != first || len(c.pages) != 1 || second.hasIdnt {
-		t.Fatalf("warm lease = %p, first = %p, pages = %d, identity retained = %v", second, first, len(c.pages), second.hasIdnt)
+	if second != first || len(c.pages) != 1 || !second.CachedIdentity().Empty() {
+		t.Fatalf("warm lease = %p, first = %p, pages = %d, identity retained = %v", second, first, len(c.pages), !second.CachedIdentity().Empty())
 	}
 	if err := second.Eval(context.Background(), "location.href", nil, &location); err != nil {
 		t.Fatal(err)

@@ -1,45 +1,13 @@
 package jira
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"testing"
-
-	"github.com/stefanm8/sessh/session"
 )
-
-type discoverySession struct {
-	session.Session
-	requests []*http.Request
-	respond  func(*http.Request) (int, string)
-}
-
-func (s *discoverySession) Do(_ context.Context, req *http.Request) (*http.Response, error) {
-	s.requests = append(s.requests, req)
-	status, body := s.respond(req)
-	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
-}
-
-func runDiscovery(t *testing.T, s *discoverySession, args ...string) (string, error) {
-	t.Helper()
-	t.Setenv("JIRA_SITE", "https://tenant.example")
-	t.Setenv("SESSH_HOME", t.TempDir())
-	j := &Jira{testSession: s}
-	cmd := j.Command()
-	cmd.SilenceUsage = true // production root sets this as well
-	cmd.SilenceErrors = true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs(args)
-	err := cmd.Execute()
-	return out.String(), err
-}
 
 func TestDiscoveryMetadataCommands(t *testing.T) {
 	for _, tc := range []struct {
@@ -54,13 +22,13 @@ func TestDiscoveryMetadataCommands(t *testing.T) {
 		{"empty fields", []string{"field", "list", "--json"}, "/rest/api/3/field", `[]`, `[]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &discoverySession{respond: func(r *http.Request) (int, string) {
+			s := &requestSession{respond: func(r *http.Request) (int, string, error) {
 				if r.Method != http.MethodGet || r.URL.Path != tc.path {
 					t.Fatalf("request %s %s", r.Method, r.URL)
 				}
-				return 200, tc.body
+				return 200, tc.body, nil
 			}}
-			out, err := runDiscovery(t, s, tc.args...)
+			out, err := runJiraCommand(t, s, "", tc.args...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -72,16 +40,16 @@ func TestDiscoveryMetadataCommands(t *testing.T) {
 }
 
 func TestMetadataPaginationAndDisplay(t *testing.T) {
-	s := &discoverySession{respond: func(r *http.Request) (int, string) {
+	s := &requestSession{respond: func(r *http.Request) (int, string, error) {
 		if r.URL.Query().Get("startAt") == "0" {
-			return 200, `{"fields":[{"fieldId":"summary","name":"Summary","required":true}],"startAt":0,"total":2}`
+			return 200, `{"fields":[{"fieldId":"summary","name":"Summary","required":true}],"startAt":0,"total":2}`, nil
 		}
 		if r.URL.Query().Get("startAt") != "1" {
 			t.Fatalf("offset %s", r.URL)
 		}
-		return 200, `{"fields":[{"fieldId":"priority","name":"Priority","required":false,"allowedValues":[{"id":"1","name":"Highest"}]}],"startAt":1,"total":2}`
+		return 200, `{"fields":[{"fieldId":"priority","name":"Priority","required":false,"allowedValues":[{"id":"1","name":"Highest"}]}],"startAt":1,"total":2}`, nil
 	}}
-	out, err := runDiscovery(t, s, "issue", "create-meta", "ENG", "10001")
+	out, err := runJiraCommand(t, s, "", "issue", "create-meta", "ENG", "10001")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +59,7 @@ func TestMetadataPaginationAndDisplay(t *testing.T) {
 }
 
 func TestSearchUsersActualPageSizeAndLimit(t *testing.T) {
-	s := &discoverySession{respond: func(r *http.Request) (int, string) {
+	s := &requestSession{respond: func(r *http.Request) (int, string, error) {
 		q := r.URL.Query()
 		if q.Get("query") != "a+b & c" {
 			t.Fatalf("query=%q", q.Get("query"))
@@ -101,18 +69,18 @@ func TestSearchUsersActualPageSizeAndLimit(t *testing.T) {
 			if q.Get("maxResults") != "2" {
 				t.Fatalf("maxResults=%s", q.Get("maxResults"))
 			}
-			return 200, `[{"accountId":"one","displayName":"One","active":true}]`
+			return 200, `[{"accountId":"one","displayName":"One","active":true}]`, nil
 		case "1":
 			if q.Get("maxResults") != "1" {
 				t.Fatalf("maxResults=%s", q.Get("maxResults"))
 			}
-			return 200, `[{"accountId":"two","displayName":"Two","active":true}]`
+			return 200, `[{"accountId":"two","displayName":"Two","active":true}]`, nil
 		default:
 			t.Fatalf("unexpected page %s", r.URL)
-			return 500, ""
+			return 500, "", nil
 		}
 	}}
-	out, err := runDiscovery(t, s, "user", "search", "a+b & c", "--limit", "2", "--json")
+	out, err := runJiraCommand(t, s, "", "user", "search", "a+b & c", "--limit", "2", "--json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,24 +105,24 @@ func TestDiscoveryBadShapesAndErrors(t *testing.T) {
 		{[]string{"issue", "edit-meta", "ENG-1", "--json"}, `{"fields":{"x":null}}`},
 	} {
 		t.Run(strings.Join(tc.args, " ")+tc.body, func(t *testing.T) {
-			s := &discoverySession{respond: func(*http.Request) (int, string) { return 200, tc.body }}
-			out, err := runDiscovery(t, s, tc.args...)
+			s := &requestSession{respond: func(*http.Request) (int, string, error) { return 200, tc.body, nil }}
+			out, err := runJiraCommand(t, s, "", tc.args...)
 			if err == nil || out != "" {
 				t.Fatalf("output=%q err=%v", out, err)
 			}
 		})
 	}
 	t.Run("permission failure", func(t *testing.T) {
-		s := &discoverySession{respond: func(*http.Request) (int, string) {
-			return 403, `{"errorMessages":["Browse users permission required"]}`
+		s := &requestSession{respond: func(*http.Request) (int, string, error) {
+			return 403, `{"errorMessages":["Browse users permission required"]}`, nil
 		}}
-		_, err := runDiscovery(t, s, "user", "search", "a")
+		_, err := runJiraCommand(t, s, "", "user", "search", "a")
 		if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "Browse users") {
 			t.Fatalf("error=%v", err)
 		}
 	})
 	t.Run("repeated account", func(t *testing.T) {
-		s := &discoverySession{respond: func(*http.Request) (int, string) { return 200, `[{"accountId":"same"}]` }}
+		s := &requestSession{respond: func(*http.Request) (int, string, error) { return 200, `[{"accountId":"same"}]`, nil }}
 		_, err := searchUsers(context.Background(), s, "a", 0)
 		if err == nil || !strings.Contains(err.Error(), "repeated") {
 			t.Fatalf("error=%v", err)
@@ -173,8 +141,11 @@ func TestReadCommandsRejectInvalidArgumentsBeforeRequests(t *testing.T) {
 		{"sprint", "list", "1", "--state", "active,active"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
-			s := &discoverySession{respond: func(r *http.Request) (int, string) { t.Fatalf("unexpected request %s", r.URL); return 500, "" }}
-			_, err := runDiscovery(t, s, args...)
+			s := &requestSession{respond: func(r *http.Request) (int, string, error) {
+				t.Fatalf("unexpected request %s", r.URL)
+				return 500, "", nil
+			}}
+			_, err := runJiraCommand(t, s, "", args...)
 			if err == nil {
 				t.Fatal("invalid input succeeded")
 			}
@@ -183,7 +154,7 @@ func TestReadCommandsRejectInvalidArgumentsBeforeRequests(t *testing.T) {
 }
 
 func TestSearchUsersStopsAtVendorRange(t *testing.T) {
-	s := &discoverySession{respond: func(r *http.Request) (int, string) {
+	s := &requestSession{respond: func(r *http.Request) (int, string, error) {
 		start := r.URL.Query().Get("startAt")
 		var offset int
 		fmt.Sscan(start, &offset)
@@ -192,7 +163,7 @@ func TestSearchUsersStopsAtVendorRange(t *testing.T) {
 			items[i] = map[string]string{"accountId": fmt.Sprint(offset + i)}
 		}
 		body, _ := json.Marshal(items)
-		return 200, string(body)
+		return 200, string(body), nil
 	}}
 	items, err := searchUsers(context.Background(), s, "a", 0)
 	if err != nil || len(items) != 1000 || len(s.requests) != 10 {

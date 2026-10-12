@@ -36,8 +36,9 @@ func (redirectingSession) Navigate(context.Context, string) (string, error) {
 	return "https://tenant.example/app", nil
 }
 
-func (redirectingSession) CurrentURL(context.Context) (string, error) {
-	return "https://id.atlassian.com/login", nil
+func (redirectingSession) Eval(_ context.Context, _ string, _, out any) error {
+	*out.(*string) = "https://id.atlassian.com/login"
+	return nil
 }
 
 func TestSSOObservesRedirectAfterNavigation(t *testing.T) {
@@ -51,26 +52,18 @@ func TestSSOObservesRedirectAfterNavigation(t *testing.T) {
 	}
 }
 
-func TestObserveCurrentURLDoesNotNavigate(t *testing.T) {
-	page := &pageSession{}
-	url, err := currentURL(context.Background(), Observe(page), "")
-	if err != nil || url != "https://idp.example/login" || len(page.navigated) != 0 {
-		t.Fatalf("URL = %q, error = %v, navigations = %v", url, err, page.navigated)
-	}
-}
-
 type unsettledURLSession struct {
 	redirectingSession
 	calls int
 	err   error
 }
 
-func (s *unsettledURLSession) CurrentURL(context.Context) (string, error) {
+func (s *unsettledURLSession) Eval(ctx context.Context, js string, arg, out any) error {
 	s.calls++
 	if s.calls == 1 {
-		return "", s.err
+		return s.err
 	}
-	return "https://id.atlassian.com/login", nil
+	return s.redirectingSession.Eval(ctx, js, arg, out)
 }
 
 func TestSSOCurrentURLFailure(t *testing.T) {

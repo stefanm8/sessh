@@ -23,14 +23,13 @@ import (
 // cookie jar and is not subject to CORS — the reason Bitbucket's same-origin
 // `/!api` trick and Jira's in-page fetch problems both disappear here.
 type browserSession struct {
+	identityCache
 	ctxt    playwright.BrowserContext
 	page    playwright.Page
 	profile Profile
 
 	mu       sync.Mutex
 	primed   bool // page has been navigated to the origin at least once
-	ident    Identity
-	hasIdnt  bool
 	unusable bool // a cancelled navigation may still be running; do not pool its page
 }
 
@@ -156,20 +155,7 @@ func requestTimeout(contexts ...context.Context) float64 {
 }
 
 func (s *browserSession) GetJSON(ctx context.Context, path string, out any) error {
-	raw, err := Get(ctx, s, path)
-	if err != nil {
-		return err
-	}
-	if raw.JSON == nil {
-		return fmt.Errorf("expected JSON from %s but got HTTP %d (%s)", path, raw.Status, Snippet(raw.Body, 120))
-	}
-	if !raw.OK {
-		return fmt.Errorf("%s: HTTP %d: %s", path, raw.Status, Snippet(raw.Body, 200))
-	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(raw.JSON, out)
+	return getJSON(ctx, s, path, out)
 }
 
 func (s *browserSession) Eval(ctx context.Context, js string, arg, out any) error {
@@ -226,7 +212,7 @@ func (s *browserSession) evaluate(ctx context.Context, js string, arg any) ([]by
 			return json.Marshal(res)
 		}
 		lastErr = err
-		if !isContextDestroyed(err) {
+		if !IsNavigationTransient(err) {
 			break
 		}
 		_ = s.page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
@@ -237,7 +223,11 @@ func (s *browserSession) evaluate(ctx context.Context, js string, arg any) ([]by
 	return nil, lastErr
 }
 
-func isContextDestroyed(err error) bool {
+// IsNavigationTransient identifies an execution context replaced by a redirect.
+func IsNavigationTransient(err error) bool {
+	if err == nil {
+		return false
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "execution context was destroyed") ||
 		strings.Contains(msg, "navigating and changing")
@@ -288,11 +278,19 @@ func (s *browserSession) Navigate(ctx context.Context, rawurl string) (string, e
 // instead of moving it. Interactive login polls Verify through it: a Verify
 // that navigates to mint a session would otherwise reload the page on which
 // the user is typing credentials.
-func Observe(s Session) Session { return observer{s} }
+func Observe(s Session) Session {
+	if _, ok := s.(observer); ok {
+		return s
+	}
+	return observer{s}
+}
 
 type observer struct{ Session }
 
 func (o observer) Navigate(ctx context.Context, _ string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if b, ok := o.Session.(*browserSession); ok {
 		return b.page.URL(), nil
 	}
@@ -328,13 +326,9 @@ func (s *browserSession) Cookies(ctx context.Context, rawurl string) ([]Cookie, 
 }
 
 func (s *browserSession) Whoami(ctx context.Context) (Identity, error) {
-	s.mu.Lock()
-	if s.hasIdnt {
-		id := s.ident
-		s.mu.Unlock()
+	if id := s.CachedIdentity(); !id.Empty() {
 		return id, nil
 	}
-	s.mu.Unlock()
 
 	if s.profile.Whoami == nil {
 		return Identity{}, nil
@@ -345,21 +339,6 @@ func (s *browserSession) Whoami(ctx context.Context) (Identity, error) {
 	}
 	s.RememberIdentity(id)
 	return id, nil
-}
-
-func (s *browserSession) RememberIdentity(id Identity) {
-	if id.Empty() {
-		return
-	}
-	s.mu.Lock()
-	s.ident, s.hasIdnt = id, true
-	s.mu.Unlock()
-}
-
-func (s *browserSession) CachedIdentity() Identity {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.ident
 }
 
 // pageOrigin compares actual browser origins, ignoring paths and spelling

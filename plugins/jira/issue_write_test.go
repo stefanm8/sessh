@@ -45,6 +45,7 @@ func (s *requestSession) Do(ctx context.Context, r *http.Request) (*http.Respons
 func runJiraCommand(t *testing.T, s session.Session, stdin string, args ...string) (string, error) {
 	t.Helper()
 	t.Setenv("JIRA_SITE", "https://fixture.atlassian.net")
+	t.Setenv("SESSH_HOME", t.TempDir())
 	cmd := (&Jira{testSession: s}).Command()
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true

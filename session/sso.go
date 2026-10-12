@@ -27,8 +27,7 @@ func VerifySSO(ctx context.Context, s Session, loginURL string, whoami func(cont
 	if ok, err := check(); ok || err != nil {
 		return err
 	}
-	landed, err := s.Navigate(ctx, loginURL)
-	if err != nil {
+	if _, err := s.Navigate(ctx, loginURL); err != nil {
 		return err
 	}
 	return WaitForAuth(ctx, func(ctx context.Context) (bool, error) {
@@ -37,7 +36,7 @@ func VerifySSO(ctx context.Context, s Session, loginURL string, whoami func(cont
 		if ok, err := check(); ok || err != nil {
 			return ok, err
 		}
-		landed, err = currentURL(ctx, s, landed)
+		landed, err := Observe(s).Navigate(ctx, "")
 		if err != nil {
 			if IsNavigationTransient(err) {
 				return false, nil

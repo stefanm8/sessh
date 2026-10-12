@@ -1,10 +1,10 @@
 package jira
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,40 +25,6 @@ func issueCommand(j *Jira) *cobra.Command {
 	cmd.AddCommand(issueMetadataCommands(j)...)
 	return cmd
 }
-
-// BuildJQL turns a project plus filters into a query.
-//
-// Jira's modern search rejects an "unbounded" query (one that is only an ORDER
-// BY), so callers must supply at least one restriction — the list command
-// defaults to `assignee = currentUser()`.
-func BuildJQL(project, status, assignee, rawJQL string) string {
-	if rawJQL != "" {
-		return rawJQL
-	}
-	var clauses []string
-	if project != "" {
-		clauses = append(clauses, fmt.Sprintf(`project = "%s"`, escapeJQL(project)))
-	}
-	if status != "" {
-		clauses = append(clauses, fmt.Sprintf(`status = "%s"`, escapeJQL(status)))
-	}
-	if assignee != "" {
-		if meRe.MatchString(assignee) {
-			clauses = append(clauses, "assignee = currentUser()")
-		} else {
-			clauses = append(clauses, fmt.Sprintf(`assignee = "%s"`, escapeJQL(assignee)))
-		}
-	}
-	where := strings.Join(clauses, " AND ")
-	if where != "" {
-		where += " "
-	}
-	return where + "ORDER BY updated DESC"
-}
-
-var meRe = regexp.MustCompile(`(?i)^(me|@me|current(user)?)$`)
-
-func escapeJQL(s string) string { return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) }
 
 // StatusColor colors a status by its Jira status category.
 func StatusColor(st Status) string {
@@ -127,16 +93,12 @@ func issueListCommand(j *Jira) *cobra.Command {
 				rows := make([][]string, 0, len(issues))
 				for _, it := range issues {
 					f := it.Fields
-					who := "Unassigned"
-					if f.Assignee != nil && f.Assignee.DisplayName != "" {
-						who = f.Assignee.DisplayName
-					}
 					rows = append(rows, []string{
 						format.Green(it.Key),
 						format.Truncate(f.Summary, 50),
 						StatusColor(f.Status),
 						format.Gray(f.IssueType.Name),
-						format.Gray(who),
+						format.Gray(assigneeName(f.Assignee)),
 						format.Gray(format.RelativeTime(f.Updated)),
 					})
 				}
@@ -194,16 +156,8 @@ func issueViewCommand(j *Jira) *cobra.Command {
 				}
 				f := it.Fields
 				fmt.Fprintln(cmd.OutOrStdout(), format.Bold(it.Key+"  "+f.Summary))
-				who := "Unassigned"
-				if f.Assignee != nil && f.Assignee.DisplayName != "" {
-					who = f.Assignee.DisplayName
-				}
-				kind := f.IssueType.Name
-				if kind == "" {
-					kind = "Issue"
-				}
 				fmt.Fprintln(cmd.OutOrStdout(), StatusColor(f.Status)+format.Gray(fmt.Sprintf(" • %s • %s • updated %s",
-					kind, who, format.RelativeTime(f.Updated))))
+					cmp.Or(f.IssueType.Name, "Issue"), assigneeName(f.Assignee), format.RelativeTime(f.Updated))))
 				fmt.Fprintln(cmd.OutOrStdout())
 				if desc := text(f.Description); desc != "" {
 					fmt.Fprintln(cmd.OutOrStdout(), desc)
@@ -233,4 +187,11 @@ func issueViewCommand(j *Jira) *cobra.Command {
 	cmd.Flags().BoolVar(&web, "web", false, "open the issue in your default browser instead")
 	cmd.Flags().StringSliceVar(&fields, "fields", nil, "comma-separated field IDs; custom fields preserved in JSON")
 	return cmd
+}
+
+func assigneeName(user *User) string {
+	if user == nil {
+		return "Unassigned"
+	}
+	return cmp.Or(user.DisplayName, "Unassigned")
 }

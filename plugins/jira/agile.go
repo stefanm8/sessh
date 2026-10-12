@@ -172,11 +172,7 @@ func agileIssuesCommand(j *Jira, kind string) *cobra.Command {
 			if issue.Key == "" {
 				return nil, fmt.Errorf("Jira issue has no key")
 			}
-			who := "Unassigned"
-			if issue.Fields.Assignee != nil && issue.Fields.Assignee.DisplayName != "" {
-				who = issue.Fields.Assignee.DisplayName
-			}
-			return []string{issue.Key, format.Truncate(issue.Fields.Summary, 50), StatusColor(issue.Fields.Status), issue.Fields.IssueType.Name, who, format.RelativeTime(issue.Fields.Updated)}, nil
+			return []string{issue.Key, format.Truncate(issue.Fields.Summary, 50), StatusColor(issue.Fields.Status), issue.Fields.IssueType.Name, assigneeName(issue.Fields.Assignee), format.RelativeTime(issue.Fields.Updated)}, nil
 		})
 	cmd.Args = agileIDArgs
 	cmd.Long = "List issues visible to your account in this " + kind + ". Jira Software access is required. Jira may return an empty list when no issues are visible, including when board permissions restrict access."

@@ -51,7 +51,6 @@ func getTransitions(ctx context.Context, s session.Session, key string) ([]Trans
 func issueReadCommands(j *Jira) []*cobra.Command {
 	commands := []*cobra.Command{}
 	for _, kind := range []string{"comments", "history"} {
-		kind := kind
 		var asJSON bool
 		var limit int
 		cmd := &cobra.Command{Use: kind + " <KEY>", Short: "List issue " + kind, Args: cobra.ExactArgs(1)}

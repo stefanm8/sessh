@@ -18,7 +18,7 @@ func TestAgileDiscoveryCommands(t *testing.T) {
 		{[]string{"sprint", "view", "12", "--json"}, "/rest/agile/1.0/sprint/12", `{"id":12,"name":"Next","state":"future","goal":"Finish","originBoardId":7}`},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
-			s := &discoverySession{respond: func(r *http.Request) (int, string) {
+			s := &requestSession{respond: func(r *http.Request) (int, string, error) {
 				if r.Method != http.MethodGet || r.URL.Path != tc.path {
 					t.Fatalf("request %s %s", r.Method, r.URL)
 				}
@@ -31,9 +31,9 @@ func TestAgileDiscoveryCommands(t *testing.T) {
 				if tc.args[0] == "sprint" && tc.args[1] == "list" && r.URL.Query().Get("state") != "active,future" {
 					t.Fatalf("query=%s", r.URL.RawQuery)
 				}
-				return 200, tc.body
+				return 200, tc.body, nil
 			}}
-			out, err := runDiscovery(t, s, tc.args...)
+			out, err := runJiraCommand(t, s, "", tc.args...)
 			if err != nil || !json.Valid([]byte(out)) {
 				t.Fatalf("output=%s error=%v", out, err)
 			}
@@ -44,7 +44,7 @@ func TestAgileDiscoveryCommands(t *testing.T) {
 func TestAgileIssuesUseEnhancedTokenPagination(t *testing.T) {
 	for _, kind := range []string{"board", "sprint"} {
 		t.Run(kind, func(t *testing.T) {
-			s := &discoverySession{respond: func(r *http.Request) (int, string) {
+			s := &requestSession{respond: func(r *http.Request) (int, string, error) {
 				if r.URL.Path != "/rest/software/1.0/"+kind+"/7/issue" {
 					t.Fatalf("retired route used: %s", r.URL)
 				}
@@ -56,14 +56,14 @@ func TestAgileIssuesUseEnhancedTokenPagination(t *testing.T) {
 					if q.Get("maxResults") != "2" {
 						t.Fatalf("first limit %s", r.URL)
 					}
-					return 200, `{"issues":[{"key":"ENG-1","fields":{"summary":"One"}}],"nextPageToken":"a+b/=&","isLast":false}`
+					return 200, `{"issues":[{"key":"ENG-1","fields":{"summary":"One"}}],"nextPageToken":"a+b/=&","isLast":false}`, nil
 				}
 				if q.Get("nextPageToken") != "a+b/=&" || q.Get("maxResults") != "1" {
 					t.Fatalf("next page %s", r.URL)
 				}
-				return 200, `{"issues":[{"key":"ENG-2","fields":{"summary":"Two"}}],"isLast":true}`
+				return 200, `{"issues":[{"key":"ENG-2","fields":{"summary":"Two"}}],"isLast":true}`, nil
 			}}
-			out, err := runDiscovery(t, s, kind, "issues", "7", "--limit", "2", "--json")
+			out, err := runJiraCommand(t, s, "", kind, "issues", "7", "--limit", "2", "--json")
 			if err != nil || len(s.requests) != 2 || !strings.Contains(out, "ENG-2") {
 				t.Fatalf("output=%s requests=%d error=%v", out, len(s.requests), err)
 			}
@@ -81,8 +81,8 @@ func TestAgileInvalidRecordsFailEvenForJSON(t *testing.T) {
 		{[]string{"sprint", "view", "7", "--json"}, `{}`},
 		{[]string{"board", "issues", "7", "--json"}, `{"issues":[{}],"isLast":true}`},
 	} {
-		s := &discoverySession{respond: func(*http.Request) (int, string) { return 200, tc.body }}
-		out, err := runDiscovery(t, s, tc.args...)
+		s := &requestSession{respond: func(*http.Request) (int, string, error) { return 200, tc.body, nil }}
+		out, err := runJiraCommand(t, s, "", tc.args...)
 		if err == nil || out != "" {
 			t.Fatalf("args=%v output=%s error=%v", tc.args, out, err)
 		}
@@ -90,8 +90,8 @@ func TestAgileInvalidRecordsFailEvenForJSON(t *testing.T) {
 }
 
 func TestAgileEmptyVisibleIssuesRemainEmptyArray(t *testing.T) {
-	s := &discoverySession{respond: func(*http.Request) (int, string) { return 200, `{"issues":[],"isLast":true}` }}
-	out, err := runDiscovery(t, s, "board", "issues", "7", "--json")
+	s := &requestSession{respond: func(*http.Request) (int, string, error) { return 200, `{"issues":[],"isLast":true}`, nil }}
+	out, err := runJiraCommand(t, s, "", "board", "issues", "7", "--json")
 	if err != nil || strings.TrimSpace(out) != "[]" {
 		t.Fatalf("output=%s error=%v", out, err)
 	}

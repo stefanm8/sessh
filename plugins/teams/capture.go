@@ -586,16 +586,11 @@ func (r *captureRun) poll(ctx context.Context) (err error) {
 		if source != "ws" {
 			source = "rest"
 		}
-		for _, c := range extractMessages(payload, source) {
-			added, err := r.w.write(c)
-			if err != nil {
-				return err
-			}
-			if added {
-				written++
-				r.logMessage(c.msg)
-			}
+		added, err := r.writeMessages(payload, source)
+		if err != nil {
+			return err
 		}
+		written += added
 	}
 	if written > 0 || out.Capture.Dropped > 0 {
 		line := "live " + format.Count(written, "new message", "new messages")
@@ -665,16 +660,9 @@ func (r *captureRun) harvest(ctx context.Context) error {
 		captureWarn("%v", convErr)
 	}
 
-	added := 0
-	for _, c := range extractMessages(root, "idb") {
-		ok, err := r.w.write(c)
-		if err != nil {
-			return err
-		}
-		if ok {
-			added++
-			r.logMessage(c.msg)
-		}
+	added, err := r.writeMessages(root, "idb")
+	if err != nil {
+		return err
 	}
 
 	if resolved := r.w.resolveConversationMembers(); resolved > 0 {
@@ -706,6 +694,21 @@ func (r *captureRun) harvest(ctx context.Context) error {
 	r.w.lastHarvest = time.Now()
 	r.w.ready = true
 	return nil
+}
+
+func (r *captureRun) writeMessages(root any, source string) (int, error) {
+	added := 0
+	for _, c := range extractMessages(root, source) {
+		ok, err := r.w.write(c)
+		if err != nil {
+			return added, err
+		}
+		if ok {
+			added++
+			r.logMessage(c.msg)
+		}
+	}
+	return added, nil
 }
 
 func (r *captureRun) logMessage(m *Message) {
@@ -776,24 +779,20 @@ func openCaptureWriter(cfg captureConfig) (_ *captureWriter, err error) {
 	}
 	// Pre-populate both dedupe sets from what is already on disk, or every
 	// restart would re-append the entire IndexedDB backlog.
-	if _, err := os.Stat(cfg.messagesPath); err == nil {
-		if _, err := StreamMessages(cfg.messagesPath, func(m *Message) {
-			if m.ID == "" {
-				return
-			}
-			w.seenIDs[m.ID] = struct{}{}
-			if ck := contentKey(m); ck != "" {
-				w.seenContent[ck] = struct{}{}
-			}
-			w.resolver.observeRaw(rawObject(m.Raw))
-			w.resolver.observe(m.AuthorMRI, m.Sender)
-		}, nil); err != nil {
-			return nil, err
+	if _, err := StreamMessages(cfg.messagesPath, func(m *Message) {
+		if m.ID == "" {
+			return
 		}
-	}
-	if err := w.loadConversations(); err != nil {
+		w.seenIDs[m.ID] = struct{}{}
+		if ck := contentKey(m); ck != "" {
+			w.seenContent[ck] = struct{}{}
+		}
+		w.resolver.observeRaw(rawObject(m.Raw))
+		w.resolver.observe(m.AuthorMRI, m.Sender)
+	}, nil); err != nil {
 		return nil, err
 	}
+	w.loadConversations()
 
 	w.f = f
 	return w, nil
@@ -898,10 +897,10 @@ type idbConversation struct {
 	} `json:"chatTitle"`
 }
 
-func (w *captureWriter) loadConversations() error {
+func (w *captureWriter) loadConversations() {
 	b, err := os.ReadFile(w.convPath)
 	if err != nil {
-		return nil // absent is the normal first-run case
+		return // absent is the normal first-run case
 	}
 	for _, line := range strings.Split(string(b), "\n") {
 		t := strings.TrimSpace(line)
@@ -917,7 +916,6 @@ func (w *captureWriter) loadConversations() error {
 			w.resolver.observe(member.MRI, member.DisplayName)
 		}
 	}
-	return nil
 }
 
 func (w *captureWriter) put(rec *conversationRecord) {
@@ -1000,50 +998,26 @@ func mergeConversation(prev, next *conversationRecord) *conversationRecord {
 	if prev == nil {
 		return next
 	}
-	if next.Type == "" {
-		next.Type = prev.Type
-	}
-	if next.Kind == "" {
-		next.Kind = prev.Kind
-	}
-	if next.Title == "" {
-		next.Title = prev.Title
-	}
-	if next.DisplayName == "" {
-		next.DisplayName = prev.DisplayName
-	}
-	if next.ShortTitle == "" {
-		next.ShortTitle = prev.ShortTitle
-	}
-	if next.LongTitle == "" {
-		next.LongTitle = prev.LongTitle
-	}
-	if next.ChannelName == "" {
-		next.ChannelName = prev.ChannelName
-	}
-	if next.TeamID == "" {
-		next.TeamID = prev.TeamID
-	}
-	if next.GroupID == "" {
-		next.GroupID = prev.GroupID
-	}
-	if next.TeamName == "" {
-		next.TeamName = prev.TeamName
-	}
+	next.Type = cmp.Or(next.Type, prev.Type)
+	next.Kind = cmp.Or(next.Kind, prev.Kind)
+	next.Title = cmp.Or(next.Title, prev.Title)
+	next.DisplayName = cmp.Or(next.DisplayName, prev.DisplayName)
+	next.ShortTitle = cmp.Or(next.ShortTitle, prev.ShortTitle)
+	next.LongTitle = cmp.Or(next.LongTitle, prev.LongTitle)
+	next.ChannelName = cmp.Or(next.ChannelName, prev.ChannelName)
+	next.TeamID = cmp.Or(next.TeamID, prev.TeamID)
+	next.GroupID = cmp.Or(next.GroupID, prev.GroupID)
+	next.TeamName = cmp.Or(next.TeamName, prev.TeamName)
 	if len(next.LastMessageTimeUTC) == 0 {
 		next.LastMessageTimeUTC = prev.LastMessageTimeUTC
 	}
 	if next.MembersComplete {
-		next.Members = normalizeConversationMembers(next.Members)
+		next.Members = mergeConversationMembers(next.Members)
 	} else {
 		next.Members = mergeConversationMembers(prev.Members, next.Members)
 		next.MembersComplete = prev.MembersComplete
 	}
 	return next
-}
-
-func normalizeConversationMembers(members []conversationMember) []conversationMember {
-	return mergeConversationMembers(nil, members)
 }
 
 func mergeConversationMembers(groups ...[]conversationMember) []conversationMember {
@@ -1139,11 +1113,7 @@ func normalizeConversation(in idbConversation, teamNames map[string]string, nowI
 		longTitle = clean(in.ChatTitle.Long)
 		members = in.ChatTitle.Members
 	}
-	if len(in.Members) > 0 {
-		members = mergeConversationMembers(members, in.Members)
-	} else {
-		members = normalizeConversationMembers(members)
-	}
+	members = mergeConversationMembers(members, in.Members)
 	var topic, threadType string
 	if in.ThreadProperties != nil {
 		// Channel names do not live in chatTitle. Teams keeps them under
@@ -1380,12 +1350,7 @@ func extractInto(root any, source string, acc *[]captured, depth int) {
 		// order only because Go randomizes map iteration, and a payload should
 		// extract identically on every run.
 		for _, k := range slices.Sorted(maps.Keys(v)) {
-			switch child := v[k].(type) {
-			case map[string]any:
-				extractInto(child, source, acc, depth+1)
-			case []any:
-				extractInto(child, source, acc, depth+1)
-			}
+			extractInto(v[k], source, acc, depth+1)
 		}
 	}
 }

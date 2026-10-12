@@ -128,7 +128,7 @@ func StreamMessages(path string, onRecord func(*Message), onBad func(int)) (Scan
 		return snapshot.stats, err
 	}
 	err = snapshot.scan(func(m *Message) {
-		recoverStoredAttribution(m)
+		normalizeMessageAttribution(m, rawObject(m.Raw), nil)
 		snapshot.stats.Total++
 		onRecord(m)
 	})

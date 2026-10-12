@@ -157,7 +157,7 @@ func pageViewCommand(c *Confluence) *cobra.Command {
 					return err
 				}
 				if web {
-					return format.OpenInBrowser(Wiki() + "/pages/viewpage.action?pageId=" + ref.ID)
+					return format.OpenInBrowser(Wiki() + "/pages/viewpage.action?pageId=" + ref)
 				}
 
 				wanted := "storage"
@@ -167,7 +167,7 @@ func pageViewCommand(c *Confluence) *cobra.Command {
 				case "adf":
 					wanted = "atlas_doc_format"
 				}
-				page, err := cl.GetPage(ctx, ref.ID, wanted)
+				page, err := cl.GetPage(ctx, ref, wanted)
 				if err != nil {
 					return err
 				}
@@ -177,10 +177,10 @@ func pageViewCommand(c *Confluence) *cobra.Command {
 					return emit(page.Body, out, page)
 				}
 
-				ancestors := cl.GetAncestors(ctx, ref.ID)
+				ancestors := cl.GetAncestors(ctx, ref)
 				labels := page.Labels
 				if labels == nil {
-					labels = cl.GetLabels(ctx, ref.ID)
+					labels = cl.GetLabels(ctx, ref)
 				}
 				users := cl.ResolveUsers(ctx, AccountIDsIn(page.Body))
 				markdown := ToMarkdown(page.Body, MarkdownOptions{
@@ -323,7 +323,7 @@ func pageChildrenCommand(c *Confluence) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				kids, err := cl.GetChildren(ctx, ref.ID, limit)
+				kids, err := cl.GetChildren(ctx, ref, limit)
 				if err != nil {
 					return err
 				}
@@ -470,7 +470,7 @@ func resolveTreeRoot(ctx context.Context, cl *Client, arg string) (string, strin
 	if err != nil {
 		return "", "", err
 	}
-	page, err := cl.GetPage(ctx, resolved.ID, "storage")
+	page, err := cl.GetPage(ctx, resolved, "storage")
 	if err != nil {
 		return "", "", err
 	}
@@ -509,7 +509,7 @@ func pageAttachmentsCommand(c *Confluence) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				files, err := cl.GetAttachments(ctx, ref.ID, limit)
+				files, err := cl.GetAttachments(ctx, ref, limit)
 				if err != nil {
 					return err
 				}

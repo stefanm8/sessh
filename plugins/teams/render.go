@@ -90,10 +90,7 @@ func (r record) MarshalJSON() ([]byte, error) {
 		if i > 0 {
 			b.WriteByte(',')
 		}
-		k, err := jsonBytes(f.key, false)
-		if err != nil {
-			return nil, err
-		}
+		k, _ := jsonBytes(f.key, false)
 		v, err := jsonBytes(f.val, false)
 		if err != nil {
 			return nil, fmt.Errorf("encoding field %q: %w", f.key, err)
@@ -207,37 +204,7 @@ type renderOpts struct {
 }
 
 func renderMessages(rows []*Message, o renderOpts) (string, error) {
-	project := func(cols []string) []record {
-		recs := make([]record, len(rows))
-		for i, m := range rows {
-			recs[i] = projectMessage(m, cols)
-		}
-		return recs
-	}
-
-	switch o.format {
-	case formatJSON, formatJSONL:
-		recs := make([]record, len(rows))
-		for i, m := range rows {
-			if o.fields != nil {
-				recs[i] = projectMessage(m, o.fields)
-			} else {
-				recs[i] = decorateMessage(m, o.raw)
-			}
-		}
-		if o.format == formatJSON {
-			return toJSON(recs, o.pretty)
-		}
-		return toJSONL(recs)
-
-	case formatCSV:
-		cols := o.fields
-		if cols == nil {
-			cols = csvDefaultFields
-		}
-		return toCSV(project(cols), cols), nil
-
-	case formatText:
+	if o.format == formatText {
 		blocks := make([]string, len(rows))
 		for i, m := range rows {
 			where := cmp.Or(m.ConversationTitle, m.ConversationID, "(unknown conversation)")
@@ -252,11 +219,30 @@ func renderMessages(rows []*Message, o renderOpts) (string, error) {
 		return strings.Join(blocks, "\n\n"), nil
 	}
 
-	cols := o.fields
-	if cols == nil {
-		cols = tableDefaultFields
+	columns := o.fields
+	if columns == nil {
+		switch o.format {
+		case formatJSON, formatJSONL:
+			columns = messageDefaultFields
+		case formatCSV:
+			columns = csvDefaultFields
+		default:
+			columns = tableDefaultFields
+		}
 	}
-	return toTable(project(cols), cols, messageTruncate), nil
+	if o.format != formatJSON && o.format != formatJSONL && o.format != formatCSV {
+		o.format = formatTable
+	}
+	projected := make([]record, len(rows))
+	for i, m := range rows {
+		if o.fields == nil && (o.format == formatJSON || o.format == formatJSONL) {
+			projected[i] = decorateMessage(m, o.raw)
+		} else {
+			projected[i] = projectMessage(m, columns)
+		}
+	}
+	o.fields = nil // Already projected, including message-only aliases.
+	return renderRows(projected, o, columns, messageTruncate)
 }
 
 // renderRows renders the aggregate commands' rows (conversations, senders),

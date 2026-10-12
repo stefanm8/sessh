@@ -72,7 +72,7 @@ func TestBuildJQL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildJQL(tt.project, tt.status, tt.assignee, tt.rawJQL)
+			got := buildSearchJQL(tt.project, tt.status, tt.assignee, tt.rawJQL, searchFilters{})
 			if got != tt.want {
 				t.Errorf("BuildJQL(%q, %q, %q, %q) =\n  %q\nwant\n  %q",
 					tt.project, tt.status, tt.assignee, tt.rawJQL, got, tt.want)
@@ -103,7 +103,7 @@ func TestBuildJQLMeAliases(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := BuildJQL("", "", tt.assignee, ""); got != tt.want {
+			if got := buildSearchJQL("", "", tt.assignee, "", searchFilters{}); got != tt.want {
 				t.Errorf("BuildJQL(assignee=%q) = %q, want %q", tt.assignee, got, tt.want)
 			}
 		})

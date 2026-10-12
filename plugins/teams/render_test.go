@@ -21,6 +21,15 @@ func sampleMessage() *Message {
 	}
 }
 
+func renderedMessages(t *testing.T, rows []*Message, opts renderOpts) string {
+	t.Helper()
+	out, err := renderMessages(rows, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 func TestResolveFormat(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -198,10 +207,7 @@ func TestRenderMessagesJSON(t *testing.T) {
 	m := sampleMessage()
 
 	t.Run("json is compact by default", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{format: formatJSON})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{m}, renderOpts{format: formatJSON})
 		if strings.Contains(out, "\n") {
 			t.Errorf("compact json should be one line, got:\n%s", out)
 		}
@@ -211,22 +217,16 @@ func TestRenderMessagesJSON(t *testing.T) {
 	})
 
 	t.Run("--pretty indents", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{format: formatJSON, pretty: true})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{m}, renderOpts{format: formatJSON, pretty: true})
 		if !strings.Contains(out, "\n  ") {
 			t.Errorf("pretty json should be indented, got:\n%s", out)
 		}
 	})
 
 	t.Run("a projection is byte-stable", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{
+		out := renderedMessages(t, []*Message{m}, renderOpts{
 			format: formatJSON, fields: []string{"id", "sender", "body"},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		want := `[{"id":"m2","sender":"Alice","body":"hello, \"deploy\"\nplease"}]`
 		if out != want {
 			t.Errorf("json =\n  %s\nwant\n  %s", out, want)
@@ -234,54 +234,39 @@ func TestRenderMessagesJSON(t *testing.T) {
 	})
 
 	t.Run("an empty result is a stable empty array, never null", func(t *testing.T) {
-		out, err := renderMessages(nil, renderOpts{format: formatJSON})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, nil, renderOpts{format: formatJSON})
 		if out != "[]" {
 			t.Errorf("json = %q, want []", out)
 		}
 	})
 
 	t.Run("HTML characters in a body are not escaped into unreadable noise", func(t *testing.T) {
-		out, err := renderMessages(
+		out := renderedMessages(t,
 			[]*Message{{ID: "x", Body: "a <b> & c", MessageType: "Text"}},
 			renderOpts{format: formatJSON, fields: []string{"body"}})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if want := `[{"body":"a <b> & c"}]`; out != want {
 			t.Errorf("json = %s, want %s (literal characters, not \\u escapes)", out, want)
 		}
 	})
 
 	t.Run("jsonl is one object per line", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m, m}, renderOpts{
+		out := renderedMessages(t, []*Message{m, m}, renderOpts{
 			format: formatJSONL, fields: []string{"id"},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if want := "{\"id\":\"m2\"}\n{\"id\":\"m2\"}"; out != want {
 			t.Errorf("jsonl = %q, want %q", out, want)
 		}
 	})
 
 	t.Run("jsonl of nothing is the empty string, not a blank line", func(t *testing.T) {
-		out, err := renderMessages(nil, renderOpts{format: formatJSONL})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, nil, renderOpts{format: formatJSONL})
 		if out != "" {
 			t.Errorf("jsonl = %q, want empty", out)
 		}
 	})
 
 	t.Run("raw is carried through as JSON, not as a quoted string", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{format: formatJSON, raw: true})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{m}, renderOpts{format: formatJSON, raw: true})
 		if !strings.Contains(out, `"raw":{"secret":"x"}`) {
 			t.Errorf("json = %s, want an embedded raw object", out)
 		}
@@ -292,12 +277,9 @@ func TestRenderMessagesCSV(t *testing.T) {
 	m := sampleMessage()
 
 	t.Run("cells with commas, quotes or newlines are quoted and escaped", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{
+		out := renderedMessages(t, []*Message{m}, renderOpts{
 			format: formatCSV, fields: []string{"id", "body"},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		want := "id,body\n" + `m2,"hello, ""deploy""` + "\n" + `please"`
 		if out != want {
 			t.Errorf("csv =\n%q\nwant\n%q", out, want)
@@ -305,20 +287,14 @@ func TestRenderMessagesCSV(t *testing.T) {
 	})
 
 	t.Run("a header row is always present, even with no data", func(t *testing.T) {
-		out, err := renderMessages(nil, renderOpts{format: formatCSV, fields: []string{"id", "body"}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, nil, renderOpts{format: formatCSV, fields: []string{"id", "body"}})
 		if out != "id,body" {
 			t.Errorf("csv = %q, want just the header", out)
 		}
 	})
 
 	t.Run("without --fields the documented default columns are used", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{format: formatCSV})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{m}, renderOpts{format: formatCSV})
 		header := strings.SplitN(out, "\n", 2)[0]
 		if header != strings.Join(csvDefaultFields, ",") {
 			t.Errorf("header = %q, want %q", header, strings.Join(csvDefaultFields, ","))
@@ -329,10 +305,7 @@ func TestRenderMessagesCSV(t *testing.T) {
 func TestRenderMessagesText(t *testing.T) {
 	t.Run("a block names when, where, who and what", func(t *testing.T) {
 		m := sampleMessage()
-		out, err := renderMessages([]*Message{m}, renderOpts{format: formatText})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{m}, renderOpts{format: formatText})
 		want := ToLocal(MessageTimeMS(m)) + "  Backend Team — Alice [RichText/Html]\n  " +
 			strings.TrimSpace(m.Body)
 		if out != want {
@@ -342,20 +315,14 @@ func TestRenderMessagesText(t *testing.T) {
 
 	t.Run("blocks are separated by a blank line", func(t *testing.T) {
 		m := sampleMessage()
-		out, err := renderMessages([]*Message{m, m}, renderOpts{format: formatText})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{m, m}, renderOpts{format: formatText})
 		if !strings.Contains(out, "\n\n") {
 			t.Errorf("text =\n%s\nwant a blank line between blocks", out)
 		}
 	})
 
 	t.Run("missing metadata degrades to explicit placeholders", func(t *testing.T) {
-		out, err := renderMessages([]*Message{{ID: "x", Body: "hi"}}, renderOpts{format: formatText})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{{ID: "x", Body: "hi"}}, renderOpts{format: formatText})
 		for _, want := range []string{"(no time)", "(unknown conversation)", "(unresolved author)"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("text = %q, missing %q", out, want)
@@ -364,12 +331,9 @@ func TestRenderMessagesText(t *testing.T) {
 	})
 
 	t.Run("the conversation id stands in when there is no title", func(t *testing.T) {
-		out, err := renderMessages(
+		out := renderedMessages(t,
 			[]*Message{{ID: "x", ConversationID: "19:abc", Body: "hi"}},
 			renderOpts{format: formatText})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if !strings.Contains(out, "19:abc") {
 			t.Errorf("text = %q, want the conversation id", out)
 		}
@@ -380,12 +344,9 @@ func TestRenderMessagesTable(t *testing.T) {
 	m := sampleMessage()
 
 	t.Run("a header, a rule and one line per row", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{
+		out := renderedMessages(t, []*Message{m}, renderOpts{
 			format: formatTable, fields: []string{"sender", "id"},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		lines := strings.Split(out, "\n")
 		if len(lines) != 3 {
 			t.Fatalf("table has %d lines, want 3:\n%s", len(lines), out)
@@ -402,32 +363,23 @@ func TestRenderMessagesTable(t *testing.T) {
 	})
 
 	t.Run("newlines in a body are collapsed so a row stays one line", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{
+		out := renderedMessages(t, []*Message{m}, renderOpts{
 			format: formatTable, fields: []string{"body"},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if len(strings.Split(out, "\n")) != 3 {
 			t.Errorf("table =\n%s\nwant the body on a single line", out)
 		}
 	})
 
 	t.Run("an unknown format falls back to the table", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{format: "", fields: []string{"id"}})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{m}, renderOpts{format: "", fields: []string{"id"}})
 		if !strings.HasPrefix(out, "id") {
 			t.Errorf("out = %q, want a table", out)
 		}
 	})
 
 	t.Run("without --fields the documented default columns are used", func(t *testing.T) {
-		out, err := renderMessages([]*Message{m}, renderOpts{format: formatTable})
-		if err != nil {
-			t.Fatal(err)
-		}
+		out := renderedMessages(t, []*Message{m}, renderOpts{format: formatTable})
 		header := strings.SplitN(out, "\n", 2)[0]
 		for _, c := range tableDefaultFields {
 			if !strings.Contains(header, c) {
@@ -438,12 +390,9 @@ func TestRenderMessagesTable(t *testing.T) {
 
 	t.Run("a long body is truncated with an ellipsis", func(t *testing.T) {
 		long := &Message{ID: "x", MessageType: "Text", Body: strings.Repeat("a", 200)}
-		out, err := renderMessages([]*Message{long}, renderOpts{
+		out := renderedMessages(t, []*Message{long}, renderOpts{
 			format: formatTable, fields: []string{"body"},
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
 		if !strings.Contains(out, "…") {
 			t.Errorf("table =\n%s\nwant a truncated body", out)
 		}

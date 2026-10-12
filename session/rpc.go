@@ -190,7 +190,7 @@ func (s *Server) leasePage(origin string) (*browserSession, func(), error) {
 func (s *Server) releasePage(client *browserSession) {
 	key := pageOrigin(client.profile.Origin)
 	client.mu.Lock()
-	client.ident, client.hasIdnt = Identity{}, false
+	client.setIdentity(Identity{})
 	usable := !client.unusable && !client.page.IsClosed()
 	client.primed = usable && key != "" && pageOrigin(client.page.URL()) == key
 	client.mu.Unlock()
@@ -468,15 +468,13 @@ func (s *Server) dispatchContext(parent context.Context, req *rpcRequest, pageSe
 // ---------------------------------------------------------------------------
 
 type rpcClient struct {
-	conn       net.Conn
-	dec        *json.Decoder
-	gate       chan struct{}
-	gateOnce   sync.Once
-	nextID     int
-	profile    Profile
-	identityMu sync.Mutex
-	ident      Identity
-	hasIdnt    bool
+	identityCache
+	conn     net.Conn
+	dec      *json.Decoder
+	gate     chan struct{}
+	gateOnce sync.Once
+	nextID   int
+	profile  Profile
 }
 
 var _ Session = (*rpcClient)(nil)
@@ -631,20 +629,7 @@ func (c *rpcClient) Do(ctx context.Context, req *http.Request) (*http.Response, 
 }
 
 func (c *rpcClient) GetJSON(ctx context.Context, path string, out any) error {
-	raw, err := Get(ctx, c, path)
-	if err != nil {
-		return err
-	}
-	if raw.JSON == nil {
-		return fmt.Errorf("expected JSON from %s but got HTTP %d (%s)", path, raw.Status, Snippet(raw.Body, 120))
-	}
-	if !raw.OK {
-		return fmt.Errorf("%s: HTTP %d: %s", path, raw.Status, Snippet(raw.Body, 200))
-	}
-	if out == nil {
-		return nil
-	}
-	return json.Unmarshal(raw.JSON, out)
+	return getJSON(ctx, c, path, out)
 }
 
 func (c *rpcClient) Eval(ctx context.Context, js string, arg, out any) error {
@@ -679,13 +664,9 @@ func (c *rpcClient) Cookies(ctx context.Context, rawurl string) ([]Cookie, error
 // *plugin's* origin, and the process holding the profile may be a different
 // plugin entirely (a teams capture serving a jira command, say).
 func (c *rpcClient) Whoami(ctx context.Context) (Identity, error) {
-	c.identityMu.Lock()
-	if c.hasIdnt {
-		id := c.ident
-		c.identityMu.Unlock()
+	if id := c.CachedIdentity(); !id.Empty() {
 		return id, nil
 	}
-	c.identityMu.Unlock()
 	var id Identity
 	var err error
 	if c.profile.Whoami == nil {
@@ -698,21 +679,6 @@ func (c *rpcClient) Whoami(ctx context.Context) (Identity, error) {
 	}
 	c.RememberIdentity(id)
 	return id, nil
-}
-
-func (c *rpcClient) RememberIdentity(id Identity) {
-	if id.Empty() {
-		return
-	}
-	c.identityMu.Lock()
-	c.ident, c.hasIdnt = id, true
-	c.identityMu.Unlock()
-}
-
-func (c *rpcClient) CachedIdentity() Identity {
-	c.identityMu.Lock()
-	defer c.identityMu.Unlock()
-	return c.ident
 }
 
 func (c *rpcClient) storageState() (json.RawMessage, error) {

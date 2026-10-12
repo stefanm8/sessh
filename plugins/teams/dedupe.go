@@ -3,7 +3,6 @@ package teams
 import (
 	"crypto/sha1"
 	"encoding/hex"
-	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -112,9 +111,5 @@ func contentKey(m *Message) string {
 	if m == nil {
 		return ""
 	}
-	var raw map[string]any
-	if len(m.Raw) > 0 {
-		_ = json.Unmarshal(m.Raw, &raw)
-	}
-	return contentKeyWithRaw(m, raw)
+	return contentKeyWithRaw(m, rawObject(m.Raw))
 }

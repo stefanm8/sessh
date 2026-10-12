@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 )
 
 // Identity is who the profile is logged in as, as far as one plugin can tell.
@@ -36,6 +37,31 @@ func (i Identity) Empty() bool {
 // Name is the friendliest label available.
 func (i Identity) Name() string {
 	return cmp.Or(i.DisplayName, i.Username, i.Email, i.AccountID)
+}
+
+// identityCache is shared by browser and RPC sessions. Empty identities are
+// never cached, so an anonymous probe cannot hide a later successful login.
+type identityCache struct {
+	mu sync.Mutex
+	id Identity
+}
+
+func (c *identityCache) CachedIdentity() Identity {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.id
+}
+
+func (c *identityCache) RememberIdentity(id Identity) {
+	if !id.Empty() {
+		c.setIdentity(id)
+	}
+}
+
+func (c *identityCache) setIdentity(id Identity) {
+	c.mu.Lock()
+	c.id = id
+	c.mu.Unlock()
 }
 
 // Cookie is a browser cookie, reduced to the fields a Verify function needs.
@@ -248,4 +274,21 @@ func (e *ErrBusy) Error() string {
 		return fmt.Sprintf("profile %q is busy (held by %s)", e.Profile, e.Holder)
 	}
 	return fmt.Sprintf("profile %q is busy", e.Profile)
+}
+
+func getJSON(ctx context.Context, s Session, path string, out any) error {
+	raw, err := Get(ctx, s, path)
+	if err != nil {
+		return err
+	}
+	if raw.JSON == nil {
+		return fmt.Errorf("expected JSON from %s but got HTTP %d (%s)", path, raw.Status, Snippet(raw.Body, 120))
+	}
+	if !raw.OK {
+		return fmt.Errorf("%s: HTTP %d: %s", path, raw.Status, Snippet(raw.Body, 200))
+	}
+	if out == nil {
+		return nil
+	}
+	return json.Unmarshal(raw.JSON, out)
 }

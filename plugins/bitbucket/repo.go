@@ -1,6 +1,7 @@
 package bitbucket
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 
@@ -52,12 +53,8 @@ func repoCommand(b *Bitbucket) *cobra.Command {
 					if r.IsPrivate {
 						visibility = format.Yellow("private")
 					}
-					name := r.Slug
-					if name == "" {
-						name = r.Name
-					}
 					rows = append(rows, []string{
-						format.Bold(name),
+						format.Bold(cmp.Or(r.Slug, r.Name)),
 						visibility,
 						r.MainBranch.Name,
 						format.Gray(format.RelativeTime(r.UpdatedOn)),
@@ -98,11 +95,7 @@ func repoCommand(b *Bitbucket) *cobra.Command {
 				if viewJSON {
 					return format.PrintJSON(raw)
 				}
-				name := r.FullName
-				if name == "" {
-					name = ws + "/" + repo
-				}
-				fmt.Println(format.Bold(name))
+				fmt.Println(format.Bold(cmp.Or(r.FullName, ws+"/"+repo)))
 				if r.Description != "" {
 					fmt.Println(r.Description)
 				}

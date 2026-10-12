@@ -121,124 +121,102 @@ func New(s session.Session) *Client {
 	return &Client{S: s, spaceIDs: map[string]string{}, spaceKey: map[string]string{}}
 }
 
-// pageThroughV2 walks v2's opaque cursor pagination. It returns ok=false when
-// the endpoint 404s, meaning "fall back to v1".
-func (c *Client) pageThroughV2(ctx context.Context, basePath string, max, limit int) ([]json.RawMessage, bool, error) {
+type pagination int
+
+const (
+	offsetPages pagination = iota
+	cursorPages
+	searchPages // Search uses totalSize, not the content API's size field.
+)
+
+type resultPage struct {
+	Results   []json.RawMessage `json:"results"`
+	TotalSize *int              `json:"totalSize"`
+	Size      *int              `json:"size"`
+	Links     struct {
+		Next string `json:"next"`
+	} `json:"_links"`
+}
+
+func withQuery(path, query string) string {
+	if query == "" {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + query
+}
+
+// paginate shares limits, decoding and loop guards across both APIs. A false
+// supported result means a v2 endpoint is unavailable and v1 should be tried.
+func (c *Client) paginate(ctx context.Context, base string, max, limit int, mode pagination) ([]json.RawMessage, bool, error) {
 	if limit == 0 {
 		limit = pageLen
 	}
-	sep := "?"
-	if strings.Contains(basePath, "?") {
-		sep = "&"
+	base = withQuery(base, fmt.Sprintf("limit=%d", limit))
+	get := getJSON
+	if mode == cursorPages {
+		get = tryGet
 	}
 	var out []json.RawMessage
-	cursor := ""
+	cursor, start := "", 0
 	for i := 0; i < runaway; i++ {
-		u := fmt.Sprintf("%s%slimit=%d", basePath, sep, limit)
-		if cursor != "" {
-			u += "&cursor=" + url.QueryEscape(cursor)
+		path := base
+		if mode != cursorPages {
+			path = withQuery(base, fmt.Sprintf("start=%d", start))
+		} else if cursor != "" {
+			path = withQuery(base, "cursor="+url.QueryEscape(cursor))
 		}
-		payload, err := tryGet(ctx, c.S, u)
-		if err != nil {
+		payload, err := get(ctx, c.S, path)
+		if err != nil || payload == nil {
 			return nil, false, err
 		}
-		if payload == nil {
-			return nil, false, nil
-		}
-		var envelope struct {
-			Results []json.RawMessage `json:"results"`
-			Links   struct {
-				Next string `json:"next"`
-			} `json:"_links"`
-		}
-		if err := json.Unmarshal(payload, &envelope); err != nil {
+		var page resultPage
+		if err := json.Unmarshal(payload, &page); err != nil {
 			return nil, false, err
 		}
-		for _, r := range envelope.Results {
-			out = append(out, r)
-			if max > 0 && len(out) >= max {
-				return out, true, nil
+		out = append(out, page.Results...)
+		if max > 0 && len(out) >= max {
+			return out[:max], true, nil
+		}
+		if len(page.Results) == 0 {
+			break
+		}
+		if mode == cursorPages {
+			m := cursorRe.FindStringSubmatch(page.Links.Next)
+			if m == nil {
+				break
+			}
+			cursor, err = url.QueryUnescape(m[1])
+			if err != nil {
+				break
+			}
+		} else {
+			start += len(page.Results)
+			if len(page.Results) < limit || (page.TotalSize != nil && start >= *page.TotalSize) ||
+				(mode == offsetPages && page.Size != nil && *page.Size < limit) {
+				break
 			}
 		}
-		if envelope.Links.Next == "" || len(envelope.Results) == 0 {
-			break
-		}
-		m := cursorRe.FindStringSubmatch(envelope.Links.Next)
-		if m == nil {
-			break
-		}
-		next, err := url.QueryUnescape(m[1])
-		if err != nil {
-			break
-		}
-		cursor = next
 	}
 	return out, true, nil
 }
 
 var cursorRe = regexp.MustCompile(`[?&]cursor=([^&]+)`)
 
-// pageThroughV2Optional retries without the optional query params (sorting,
-// description expansion) if this deployment rejects one with a 400. A nicety
-// should never fail a whole listing.
-func (c *Client) pageThroughV2Optional(ctx context.Context, basePath, extra string, max, limit int) ([]json.RawMessage, bool, error) {
-	sep := "?"
-	if strings.Contains(basePath, "?") {
-		sep = "&"
-	}
-	path := basePath
-	if extra != "" {
-		path = basePath + sep + extra
-	}
-	out, ok, err := c.pageThroughV2(ctx, path, max, limit)
+// list retries unsupported optional v2 parameters, then falls back to v1 when
+// the endpoint itself is unavailable.
+func (c *Client) list(ctx context.Context, v2, extra, v1 string, max, limit int) ([]json.RawMessage, error) {
+	out, ok, err := c.paginate(ctx, withQuery(v2, extra), max, limit, cursorPages)
 	if err != nil && extra != "" && statusOf(err) == 400 {
-		return c.pageThroughV2(ctx, basePath, max, limit)
+		out, ok, err = c.paginate(ctx, v2, max, limit, cursorPages)
 	}
-	return out, ok, err
-}
-
-// pageThroughV1 walks v1's start/limit offset pagination.
-func (c *Client) pageThroughV1(ctx context.Context, basePath string, max, limit int) ([]json.RawMessage, error) {
-	if limit == 0 {
-		limit = pageLen
+	if err == nil && !ok {
+		out, _, err = c.paginate(ctx, v1, max, limit, offsetPages)
 	}
-	sep := "?"
-	if strings.Contains(basePath, "?") {
-		sep = "&"
-	}
-	var out []json.RawMessage
-	start := 0
-	for i := 0; i < runaway; i++ {
-		payload, err := getJSON(ctx, c.S, fmt.Sprintf("%s%slimit=%d&start=%d", basePath, sep, limit, start))
-		if err != nil {
-			return nil, err
-		}
-		var envelope struct {
-			Results   []json.RawMessage `json:"results"`
-			TotalSize *int              `json:"totalSize"`
-			Size      *int              `json:"size"`
-		}
-		if err := json.Unmarshal(payload, &envelope); err != nil {
-			return nil, err
-		}
-		for _, r := range envelope.Results {
-			out = append(out, r)
-			if max > 0 && len(out) >= max {
-				return out, nil
-			}
-		}
-		start += len(envelope.Results)
-		if len(envelope.Results) == 0 || len(envelope.Results) < limit {
-			break
-		}
-		if envelope.TotalSize != nil && start >= *envelope.TotalSize {
-			break
-		}
-		if envelope.Size != nil && *envelope.Size < limit {
-			break
-		}
-	}
-	return out, nil
+	return out, err
 }
 
 // ---------------------------------------------------------------------------
@@ -247,15 +225,13 @@ func (c *Client) pageThroughV1(ctx context.Context, basePath string, max, limit 
 
 // Space is the normalized shape of a space in either API version.
 type Space struct {
-	ID          string            `json:"id"`
-	Key         string            `json:"key"`
-	Name        string            `json:"name"`
-	Type        string            `json:"type"`
-	Status      string            `json:"status"`
-	Description string            `json:"description"`
-	HomepageID  string            `json:"homepageId,omitempty"`
-	Links       map[string]string `json:"-"`
-	Raw         json.RawMessage   `json:"-"`
+	ID          string `json:"id"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	Description string `json:"description"`
+	HomepageID  string `json:"homepageId,omitempty"`
 }
 
 // Page is the normalized shape of a page in either API version.
@@ -277,7 +253,6 @@ type Page struct {
 	Labels     []string          `json:"labels,omitempty"`
 	Ancestors  []Ancestor        `json:"ancestors,omitempty"`
 	Links      map[string]string `json:"-"`
-	Raw        json.RawMessage   `json:"-"`
 }
 
 // Ancestor is one step of a page's breadcrumb.
@@ -306,7 +281,6 @@ type rawSpace struct {
 	Homepage   *struct {
 		ID any `json:"id"`
 	} `json:"homepage"`
-	Links map[string]string `json:"_links"`
 }
 
 func normalizeSpace(raw json.RawMessage) *Space {
@@ -322,7 +296,6 @@ func normalizeSpace(raw json.RawMessage) *Space {
 	return &Space{
 		ID: idString(r.ID), Key: r.Key, Name: r.Name, Type: r.Type, Status: r.Status,
 		Description: strings.TrimSpace(desc), HomepageID: home,
-		Links: r.Links, Raw: raw,
 	}
 }
 
@@ -393,7 +366,7 @@ func normalizePage(raw json.RawMessage) *Page {
 		UpdatedBy: cmp.Or(r.Version.By.DisplayName, r.History.LastUpdated.By.DisplayName),
 		AuthorID:  cmp.Or(r.AuthorID, r.Version.AuthorID),
 		CreatedAt: cmp.Or(r.CreatedAt, r.History.CreatedDate),
-		Links:     r.Links, Raw: raw,
+		Links:     r.Links,
 	}
 	if p.Type == "" {
 		p.Type = "page"
@@ -444,7 +417,7 @@ func idString(v any) string {
 	case string:
 		return t
 	case float64:
-		return strings.TrimSuffix(fmt.Sprintf("%.0f", t), ".0")
+		return fmt.Sprintf("%.0f", t)
 	case json.Number:
 		return t.String()
 	default:
@@ -457,15 +430,10 @@ func idString(v any) string {
 // ---------------------------------------------------------------------------
 
 func (c *Client) ListSpaces(ctx context.Context, max int) ([]*Space, error) {
-	raws, ok, err := c.pageThroughV2Optional(ctx, "/wiki/api/v2/spaces", "sort=name&description-format=plain", max, 0)
+	raws, err := c.list(ctx, "/wiki/api/v2/spaces", "sort=name&description-format=plain",
+		"/wiki/rest/api/space?expand=description.plain,homepage", max, 0)
 	if err != nil {
 		return nil, err
-	}
-	if !ok {
-		raws, err = c.pageThroughV1(ctx, "/wiki/rest/api/space?expand=description.plain,homepage", max, 0)
-		if err != nil {
-			return nil, err
-		}
 	}
 	out := make([]*Space, 0, len(raws))
 	for _, raw := range raws {
@@ -587,27 +555,25 @@ func (c *Client) ListPages(ctx context.Context, opts ListPagesOptions) ([]*Page,
 			base += "&space-id=" + url.QueryEscape(id)
 		}
 	}
-	raws, ok, err := c.pageThroughV2Optional(ctx, base, "sort="+url.QueryEscape(opts.Sort), opts.Max, 0)
+	v1 := "/wiki/rest/api/content?type=page&expand=space,version,history.lastUpdated"
+	if opts.Space != "" {
+		v1 += "&spaceKey=" + url.QueryEscape(opts.Space)
+	}
+	raws, err := c.list(ctx, base, "sort="+url.QueryEscape(opts.Sort), v1, opts.Max, 0)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
-		v1 := "/wiki/rest/api/content?type=page&expand=space,version,history.lastUpdated"
-		if opts.Space != "" {
-			v1 += "&spaceKey=" + url.QueryEscape(opts.Space)
-		}
-		raws, err = c.pageThroughV1(ctx, v1, opts.Max, 0)
-		if err != nil {
-			return nil, err
-		}
-	}
+	return normalizePages(raws), nil
+}
+
+func normalizePages(raws []json.RawMessage) []*Page {
 	out := make([]*Page, 0, len(raws))
 	for _, raw := range raws {
 		if p := normalizePage(raw); p != nil {
 			out = append(out, p)
 		}
 	}
-	return out, nil
+	return out
 }
 
 // GetPage fetches one page including its body.
@@ -618,39 +584,28 @@ func (c *Client) GetPage(ctx context.Context, id, format string) (*Page, error) 
 	if format == "" {
 		format = "storage"
 	}
-	var (
-		p      *Page
-		body   string
-		actual = format
-	)
-
 	payload, err := tryGet(ctx, c.S,
 		"/wiki/api/v2/pages/"+url.PathEscape(id)+"?body-format="+url.QueryEscape(format))
 	if err != nil {
 		return nil, err
 	}
-	if payload != nil {
-		p = normalizePage(payload)
-		body = bodyOf(payload, format)
-	} else {
-		expand := "body.storage,version,space,ancestors,history.lastUpdated,metadata.labels"
+	if payload == nil {
+		bodyFormat := "storage"
 		if format == "view" {
-			expand = "body.view,version,space,ancestors,history.lastUpdated,metadata.labels"
+			bodyFormat = "view"
 		}
+		expand := "body." + bodyFormat + ",version,space,ancestors,history.lastUpdated,metadata.labels"
 		payload, err = tryGet(ctx, c.S,
 			"/wiki/rest/api/content/"+url.PathEscape(id)+"?expand="+url.QueryEscape(expand))
 		if err != nil {
 			return nil, err
 		}
-		if payload == nil {
-			return nil, fmt.Errorf("page not found: %s", id)
-		}
-		p = normalizePage(payload)
-		body = bodyOf(payload, format)
 	}
+	p := normalizePage(payload)
 	if p == nil {
 		return nil, fmt.Errorf("page not found: %s", id)
 	}
+	body, actual := bodyOf(payload, format), format
 
 	if strings.TrimSpace(body) == "" && format == "storage" {
 		if alt, err := tryGet(ctx, c.S, "/wiki/rest/api/content/"+url.PathEscape(id)+"?expand=body.view"); err == nil && alt != nil {
@@ -669,24 +624,12 @@ func (c *Client) GetPage(ctx context.Context, id, format string) (*Page, error) 
 }
 
 func (c *Client) GetChildren(ctx context.Context, id string, max int) ([]*Page, error) {
-	raws, ok, err := c.pageThroughV2(ctx, "/wiki/api/v2/pages/"+url.PathEscape(id)+"/children", max, 0)
+	raws, err := c.list(ctx, "/wiki/api/v2/pages/"+url.PathEscape(id)+"/children", "",
+		"/wiki/rest/api/content/"+url.PathEscape(id)+"/child/page?expand=version,space", max, 0)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
-		raws, err = c.pageThroughV1(ctx,
-			"/wiki/rest/api/content/"+url.PathEscape(id)+"/child/page?expand=version,space", max, 0)
-		if err != nil {
-			return nil, err
-		}
-	}
-	out := make([]*Page, 0, len(raws))
-	for _, raw := range raws {
-		if p := normalizePage(raw); p != nil {
-			out = append(out, p)
-		}
-	}
-	return out, nil
+	return normalizePages(raws), nil
 }
 
 // GetAncestors returns the breadcrumb, root-first. Best-effort: it never fails
@@ -748,17 +691,10 @@ type Attachment struct {
 }
 
 func (c *Client) GetAttachments(ctx context.Context, id string, max int) ([]Attachment, error) {
-	raws, ok, err := c.pageThroughV2Optional(ctx,
-		"/wiki/api/v2/pages/"+url.PathEscape(id)+"/attachments", "sort=-modified-date", max, 50)
+	raws, err := c.list(ctx, "/wiki/api/v2/pages/"+url.PathEscape(id)+"/attachments", "sort=-modified-date",
+		"/wiki/rest/api/content/"+url.PathEscape(id)+"/child/attachment?expand=version,metadata", max, 50)
 	if err != nil {
 		return nil, err
-	}
-	if !ok {
-		raws, err = c.pageThroughV1(ctx,
-			"/wiki/rest/api/content/"+url.PathEscape(id)+"/child/attachment?expand=version,metadata", max, 50)
-		if err != nil {
-			return nil, err
-		}
 	}
 	out := make([]Attachment, 0, len(raws))
 	for _, raw := range raws {
@@ -917,35 +853,13 @@ func normalizeHit(raw json.RawMessage) Hit {
 }
 
 func (c *Client) Search(ctx context.Context, cql string, max int) ([]Hit, error) {
-	const limit = 50
+	raws, _, err := c.paginate(ctx, "/wiki/rest/api/search?cql="+url.QueryEscape(cql), max, 50, searchPages)
+	if err != nil {
+		return nil, err
+	}
 	var out []Hit
-	start := 0
-	for i := 0; i < runaway; i++ {
-		payload, err := getJSON(ctx, c.S, fmt.Sprintf("/wiki/rest/api/search?cql=%s&limit=%d&start=%d",
-			url.QueryEscape(cql), limit, start))
-		if err != nil {
-			return nil, err
-		}
-		var envelope struct {
-			Results   []json.RawMessage `json:"results"`
-			TotalSize *int              `json:"totalSize"`
-		}
-		if err := json.Unmarshal(payload, &envelope); err != nil {
-			return nil, err
-		}
-		for _, r := range envelope.Results {
-			out = append(out, normalizeHit(r))
-			if max > 0 && len(out) >= max {
-				return out, nil
-			}
-		}
-		start += len(envelope.Results)
-		if len(envelope.Results) == 0 || len(envelope.Results) < limit {
-			break
-		}
-		if envelope.TotalSize != nil && start >= *envelope.TotalSize {
-			break
-		}
+	for _, raw := range raws {
+		out = append(out, normalizeHit(raw))
 	}
 	return out, nil
 }
@@ -977,50 +891,38 @@ func (c *Client) SearchContent(ctx context.Context, cql string, max int) ([]*Pag
 	if json.Unmarshal(payload, &envelope) != nil {
 		return nil, nil
 	}
-	out := make([]*Page, 0, len(envelope.Results))
-	for _, raw := range envelope.Results {
-		if p := normalizePage(raw); p != nil {
-			out = append(out, p)
-		}
-	}
-	return out, nil
+	return normalizePages(envelope.Results), nil
 }
 
 // ---------------------------------------------------------------------------
 // Reference resolution: URL / id / tiny link / SPACE:Title / free text -> id
 // ---------------------------------------------------------------------------
 
-// Resolved is a reference that has been turned into a real page id.
-type Resolved struct {
-	ID    string
-	Space string
-	Page  *Page
-}
-
-func (c *Client) ResolveRef(ctx context.Context, input string) (*Resolved, error) {
+// ResolveRef turns a URL, id, tiny link or title into a page id.
+func (c *Client) ResolveRef(ctx context.Context, input string) (string, error) {
 	ref := ParseRef(input)
 	if ref == nil {
-		return nil, fmt.Errorf("missing page reference")
+		return "", fmt.Errorf("missing page reference")
 	}
 
 	switch ref.Kind {
 	case RefID:
-		return &Resolved{ID: ref.ID, Space: ref.Space}, nil
+		return ref.ID, nil
 
 	case RefSpace:
-		return nil, fmt.Errorf("%q points at a space, not a page. Try: sessh confluence space view %s", input, ref.Space)
+		return "", fmt.Errorf("%q points at a space, not a page. Try: sessh confluence space view %s", input, ref.Space)
 
 	case RefTiny:
 		// Only a redirect can tell us what a tiny link means; follow it and
 		// re-parse where we landed.
 		raw, err := session.Get(ctx, c.S, ref.Path)
 		if err != nil {
-			return nil, err
+			return "", err
 		}
 		if again := ParseRef(raw.URL); again != nil && again.Kind == RefID {
-			return &Resolved{ID: again.ID, Space: again.Space}, nil
+			return again.ID, nil
 		}
-		return nil, fmt.Errorf("could not expand the tiny link %q (it redirected to %s)", input, raw.URL)
+		return "", fmt.Errorf("could not expand the tiny link %q (it redirected to %s)", input, raw.URL)
 	}
 
 	// Title or free text: try an exact title match first, then relevance search.
@@ -1034,19 +936,19 @@ func (c *Client) ResolveRef(ctx context.Context, input string) (*Resolved, error
 		exactCQL += fmt.Sprintf(` AND space = "%s"`, EscapeCQL(space))
 	}
 	if exact, err := c.SearchContent(ctx, exactCQL, 5); err == nil && len(exact) > 0 {
-		return &Resolved{ID: exact[0].ID, Space: cmp.Or(exact[0].SpaceKey, space), Page: exact[0]}, nil
+		return exact[0].ID, nil
 	}
 	hits, err := c.SearchText(ctx, title, space, "page", 5)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	if len(hits) > 0 && hits[0].ID != "" {
-		return &Resolved{ID: hits[0].ID, Space: cmp.Or(hits[0].SpaceKey, space)}, nil
+		return hits[0].ID, nil
 	}
 
 	hint := ""
 	if space == "" {
 		hint = ` Try 'sessh confluence search "<text>"' to find it.`
 	}
-	return nil, fmt.Errorf("no Confluence page found for %q.%s", input, hint)
+	return "", fmt.Errorf("no Confluence page found for %q.%s", input, hint)
 }

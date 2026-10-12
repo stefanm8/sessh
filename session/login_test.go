@@ -75,7 +75,7 @@ func (p *pageSession) Eval(_ context.Context, js string, _, out any) error {
 
 func TestObserveDoesNotNavigate(t *testing.T) {
 	page := &pageSession{}
-	landed, err := Observe(page).Navigate(context.Background(), "https://tenant.example/app/")
+	landed, err := Observe(Observe(page)).Navigate(context.Background(), "https://tenant.example/app/")
 	if err != nil || landed != "https://idp.example/login" {
 		t.Fatalf("Navigate = %q, %v; want where the page already is", landed, err)
 	}

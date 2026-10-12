@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -42,12 +43,13 @@ func executeMutation(ctx context.Context, s session.Session, cmd *cobra.Command,
 	if raw != nil && (len(raw) == 0 || raw[0] != '{') {
 		return fmt.Errorf("Jira accepted the write request but returned an invalid result; inspect Jira before retrying")
 	}
+	var result struct {
+		ID  string `json:"id"`
+		Key string `json:"key"`
+	}
+	decodeErr := json.Unmarshal(raw, &result)
 	if created != "" {
-		var result struct {
-			ID  string `json:"id"`
-			Key string `json:"key"`
-		}
-		if err := json.Unmarshal(raw, &result); err != nil || result.ID == "" || (created == "issue" && result.Key == "") {
+		if decodeErr != nil || result.ID == "" || (created == "issue" && result.Key == "") {
 			return fmt.Errorf("Jira accepted the %s request but returned an invalid result; inspect Jira before retrying", created)
 		}
 		if o.asJSON {
@@ -64,12 +66,8 @@ func executeMutation(ctx context.Context, s session.Session, cmd *cobra.Command,
 		// Assign and transition document an empty 204. Edit may return an
 		// IssueBean (200); arbitrary objects such as proxy error payloads do
 		// not establish that the requested update succeeded.
-		var issue struct {
-			ID  string `json:"id"`
-			Key string `json:"key"`
-		}
 		edit := method == "PUT" && !strings.HasSuffix(path, "/assignee")
-		if !edit || json.Unmarshal(raw, &issue) != nil || issue.ID == "" || issue.Key == "" {
+		if !edit || decodeErr != nil || result.ID == "" || result.Key == "" {
 			return fmt.Errorf("Jira accepted the write request but returned an unexpected result; inspect Jira before retrying")
 		}
 	}
@@ -351,9 +349,6 @@ func (o issueFieldsOptions) build(cmd *cobra.Command, create bool, project strin
 			if err := validateIdentifier(o.assignee, "account ID"); err != nil {
 				return nil, err
 			}
-			if strings.TrimSpace(o.assignee) == "" {
-				return nil, fmt.Errorf("--assignee cannot be empty; use unassigned")
-			}
 			if _, ok := fields["assignee"]; ok {
 				return nil, fmt.Errorf("field assignee is set by both --assignee and --fields-json")
 			}
@@ -370,7 +365,6 @@ func (o issueFieldsOptions) build(cmd *cobra.Command, create bool, project strin
 func issueWriteCommands(j *Jira) []*cobra.Command {
 	commands := []*cobra.Command{}
 	for _, create := range []bool{true, false} {
-		create := create
 		var o issueFieldsOptions
 		var options mutationOptions
 		use, short := "edit <KEY>", "Edit issue fields (omitted fields stay unchanged)"
@@ -390,23 +384,19 @@ func issueWriteCommands(j *Jira) []*cobra.Command {
 			}
 			return j.withSession(true, func(ctx context.Context, s session.Session, cmd *cobra.Command, args []string) error {
 				if create {
-					if cmd.Flags().Changed("type") {
-						v, err := resolveIssueType(ctx, s, args[0], o.issueType)
+					typeName := o.issueType
+					if !cmd.Flags().Changed("type") {
+						v := fields["issuetype"].(map[string]any)
+						if id, _ := v["id"].(string); id == "" {
+							typeName, _ = v["name"].(string)
+						}
+					}
+					if typeName != "" {
+						v, err := resolveIssueType(ctx, s, args[0], typeName)
 						if err != nil {
 							return err
 						}
 						fields["issuetype"] = v
-					}
-					if !cmd.Flags().Changed("type") {
-						v := fields["issuetype"].(map[string]any)
-						if id, _ := v["id"].(string); id == "" {
-							name, _ := v["name"].(string)
-							resolved, err := resolveIssueType(ctx, s, args[0], name)
-							if err != nil {
-								return err
-							}
-							fields["issuetype"] = resolved
-						}
 					}
 					if cmd.Flags().Changed("assignee") {
 						v, err := resolveAssignee(ctx, s, o.assignee)
@@ -474,14 +464,7 @@ func issueWriteCommands(j *Jira) []*cobra.Command {
 			if err != nil {
 				return err
 			}
-			var selected *Transition
-			for i := range items {
-				if items[i].ID == args[1] {
-					selected = &items[i]
-					break
-				}
-			}
-			if selected == nil {
+			if !slices.ContainsFunc(items, func(item Transition) bool { return item.ID == args[1] }) {
 				return fmt.Errorf("transition %s is unavailable; use jira issue transitions %s", args[1], args[0])
 			}
 			// Required transition-screen fields may already be populated on the

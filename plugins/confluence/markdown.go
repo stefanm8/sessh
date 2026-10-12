@@ -21,6 +21,10 @@ import (
 // children, and an unrecognised macro renders its body if it has one (or leaves
 // an HTML comment naming it, so the reader knows content was there).
 
+var emphasis = map[string]string{
+	"strong": "**", "b": "**", "em": "*", "i": "*", "del": "~~", "s": "~~", "strike": "~~",
+}
+
 var headings = map[string]int{"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
 
 // blockTags start their own block; everything else is inline.
@@ -103,9 +107,6 @@ func ToMarkdown(storage string, opts MarkdownOptions) string {
 		opts.Wiki = opts.Site + "/wiki"
 	} else {
 		opts.Wiki = strings.TrimRight(opts.Wiki, "/")
-	}
-	if opts.Users == nil {
-		opts.Users = map[string]string{}
 	}
 	ctx := &mdCtx{MarkdownOptions: opts}
 	return tidy(renderBlocks(ParseHTML(storage).Children, ctx))
@@ -264,27 +265,53 @@ func absolute(href string, ctx *mdCtx) string {
 // renderBlocks renders sibling nodes as a sequence of Markdown blocks. Inline
 // runs between block elements are gathered into their own paragraph.
 func renderBlocks(nodes []*Node, ctx *mdCtx) string {
-	var parts []string
+	return renderSequence(nodes, ctx, false)
+}
+
+// Within a list item, nested lists follow the preceding block without a blank
+// line. Other blocks use the same inline buffering and rendering as page bodies.
+func renderSequence(nodes []*Node, ctx *mdCtx, listItem bool) string {
+	type part struct {
+		text  string
+		tight bool
+	}
+	var parts []part
 	var buf strings.Builder
 	flush := func() {
-		t := buf.String()
-		if strings.TrimSpace(t) != "" {
-			parts = append(parts, strings.Trim(t, " \t"))
+		if t := buf.String(); strings.TrimSpace(t) != "" {
+			t = strings.Trim(t, " \t")
+			if listItem {
+				t = strings.TrimSpace(t)
+			}
+			parts = append(parts, part{text: t})
 		}
 		buf.Reset()
 	}
 	for _, n := range nodes {
-		if isBlockNode(n) {
-			flush()
-			if b := renderBlock(n, ctx); strings.TrimSpace(b) != "" {
-				parts = append(parts, strings.Trim(b, "\n"))
-			}
-		} else {
+		if !isBlockNode(n) {
 			buf.WriteString(renderInline(n, ctx))
+			continue
+		}
+		flush()
+		tight := listItem && (n.Name == "ul" || n.Name == "ol")
+		if b := renderBlock(n, ctx); tight || strings.TrimSpace(b) != "" {
+			if !listItem {
+				b = strings.Trim(b, "\n")
+			}
+			parts = append(parts, part{text: b, tight: tight})
 		}
 	}
 	flush()
-	return strings.Join(parts, "\n\n")
+	for i, p := range parts {
+		if i > 0 {
+			buf.WriteByte('\n')
+			if !p.tight {
+				buf.WriteByte('\n')
+			}
+		}
+		buf.WriteString(p.text)
+	}
+	return buf.String()
 }
 
 func inlineAll(nodes []*Node, ctx *mdCtx) string {
@@ -334,15 +361,9 @@ func renderBlock(n *Node, ctx *mdCtx) string {
 		if code != nil {
 			lang = langFromClass(code.Attr("class"))
 		}
-		src := n
-		if code != nil {
-			src = code
-		}
-		return fence(TextOf(src), lang)
+		return fence(TextOf(cmp.Or(code, n)), lang)
 	case "dl":
 		return renderDefinitionList(n, ctx)
-	case "details", "summary":
-		return renderChildren(n, ctx)
 	case "ac:structured-macro", "ac:macro":
 		return renderMacro(n, ctx)
 	case "ac:task-list":
@@ -412,19 +433,10 @@ func renderInline(n *Node, ctx *mdCtx) string {
 			return "<br>"
 		}
 		return "  \n"
-	case "strong", "b":
+	case "strong", "b", "em", "i", "del", "s", "strike":
+		marker := emphasis[n.Name]
 		if t := strings.TrimSpace(inlineAll(n.Children, ctx)); t != "" {
-			return "**" + t + "**"
-		}
-		return ""
-	case "em", "i":
-		if t := strings.TrimSpace(inlineAll(n.Children, ctx)); t != "" {
-			return "*" + t + "*"
-		}
-		return ""
-	case "del", "s", "strike":
-		if t := strings.TrimSpace(inlineAll(n.Children, ctx)); t != "" {
-			return "~~" + t + "~~"
+			return marker + t + marker
 		}
 		return ""
 	case "code", "tt":
@@ -515,66 +527,22 @@ func renderList(n *Node, ctx *mdCtx) string {
 		if ordered {
 			marker = strconv.Itoa(start+idx) + ". "
 		}
-		indent := strings.Repeat(" ", len(marker))
-		body := tidy(listItemBody(li, ctx))
-		parts := strings.Split(body, "\n")
-		lines = append(lines, marker+parts[0])
-		for _, r := range parts[1:] {
-			if r == "" {
-				lines = append(lines, "")
-			} else {
-				lines = append(lines, indent+r)
-			}
-		}
+		lines = append(lines, indentItem(tidy(renderSequence(li.Children, ctx, true)), marker))
 	}
 	return strings.Join(lines, "\n")
 }
 
-// listItemBody is like renderBlocks, except a nested list hangs directly off
-// the line above it — a blank line there would turn the whole list loose.
-func listItemBody(li *Node, ctx *mdCtx) string {
-	type part struct {
-		text  string
-		tight bool
-	}
-	var parts []part
-	var buf strings.Builder
-	flush := func() {
-		if t := strings.TrimSpace(buf.String()); t != "" {
-			parts = append(parts, part{text: t})
-		}
-		buf.Reset()
-	}
-	for _, c := range li.Children {
-		switch {
-		case IsElement(c, "ul") || IsElement(c, "ol"):
-			flush()
-			parts = append(parts, part{text: renderList(c, ctx), tight: true})
-		case isBlockNode(c):
-			flush()
-			if b := renderBlock(c, ctx); strings.TrimSpace(b) != "" {
-				parts = append(parts, part{text: b})
-			}
-		default:
-			buf.WriteString(renderInline(c, ctx))
+// indentItem aligns continuation lines under list and task-list text.
+func indentItem(body, marker string) string {
+	parts := strings.Split(body, "\n")
+	parts[0] = marker + parts[0]
+	indent := strings.Repeat(" ", len(marker))
+	for i := 1; i < len(parts); i++ {
+		if parts[i] != "" {
+			parts[i] = indent + parts[i]
 		}
 	}
-	flush()
-
-	var out strings.Builder
-	for i, p := range parts {
-		if i == 0 {
-			out.WriteString(p.text)
-			continue
-		}
-		if p.tight {
-			out.WriteString("\n")
-		} else {
-			out.WriteString("\n\n")
-		}
-		out.WriteString(p.text)
-	}
-	return out.String()
+	return strings.Join(parts, "\n")
 }
 
 func renderDefinitionList(n *Node, ctx *mdCtx) string {
@@ -603,22 +571,14 @@ func collectRows(n *Node, out []*Node) []*Node {
 	return out
 }
 
-type tableCell struct {
-	header bool
-	text   string
-}
-
 func renderTable(n *Node, ctx *mdCtx) string {
-	rows := collectRows(n, nil)
-	if len(rows) == 0 {
-		return ""
-	}
 	cellCtx := *ctx
 	cellCtx.inTable = true
-
-	var grid [][]tableCell
-	for _, tr := range rows {
-		var row []tableCell
+	var grid [][]string
+	width, headerRow := 0, false
+	for _, tr := range collectRows(n, nil) {
+		var row []string
+		allHeaders := true
 		for _, cell := range tr.Children {
 			if !IsElement(cell, "td") && !IsElement(cell, "th") {
 				continue
@@ -627,66 +587,37 @@ func renderTable(n *Node, ctx *mdCtx) string {
 			if v, err := strconv.Atoi(cell.Attr("colspan")); err == nil && v > 1 {
 				span = v
 			}
-			header := cell.Name == "th"
-			row = append(row, tableCell{header: header, text: cellText(cell, &cellCtx)})
+			allHeaders = allHeaders && cell.Name == "th"
+			row = append(row, cellText(cell, &cellCtx))
 			// Expand colspans into empty cells so every row lines up.
-			for k := 1; k < span; k++ {
-				row = append(row, tableCell{header: header})
-			}
+			row = append(row, make([]string, span-1)...)
 		}
 		if len(row) > 0 {
+			if len(grid) == 0 {
+				headerRow = allHeaders
+			}
+			width = max(width, len(row))
 			grid = append(grid, row)
 		}
 	}
 	if len(grid) == 0 {
 		return ""
 	}
-
-	width := 0
-	for _, r := range grid {
-		if len(r) > width {
-			width = len(r)
-		}
-	}
-	pad := func(r []tableCell) []string {
-		cells := make([]string, 0, width)
-		for _, c := range r {
-			cells = append(cells, c.text)
-		}
-		for len(cells) < width {
-			cells = append(cells, "")
-		}
-		return cells
+	line := func(row []string) string {
+		cells := make([]string, width)
+		copy(cells, row)
+		return "| " + strings.Join(cells, " | ") + " |"
 	}
 
-	// Confluence often uses <th> for the *first column* rather than a header
-	// row. Only treat row 0 as headers when every one of its cells is a <th>.
-	headerRow := len(grid[0]) == width
-	if headerRow {
-		for _, c := range grid[0] {
-			if !c.header {
-				headerRow = false
-				break
-			}
-		}
+	// A first column of <th> cells is not a header row. Only a complete first
+	// row of <th> cells supplies headers; otherwise add an empty header row.
+	var header []string
+	if headerRow && len(grid[0]) == width {
+		header, grid = grid[0], grid[1:]
 	}
-	header := make([]string, width)
-	body := grid
-	if headerRow {
-		header = pad(grid[0])
-		body = grid[1:]
-	}
-
-	seps := make([]string, width)
-	for i := range seps {
-		seps[i] = "---"
-	}
-	lines := []string{
-		"| " + strings.Join(header, " | ") + " |",
-		"| " + strings.Join(seps, " | ") + " |",
-	}
-	for _, r := range body {
-		lines = append(lines, "| "+strings.Join(pad(r), " | ")+" |")
+	lines := []string{line(header), "| " + strings.Repeat("--- | ", width-1) + "--- |"}
+	for _, row := range grid {
+		lines = append(lines, line(row))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -696,7 +627,6 @@ func renderTable(n *Node, ctx *mdCtx) string {
 func cellText(cell *Node, ctx *mdCtx) string {
 	t := tidy(renderChildren(cell, ctx))
 	t = strings.ReplaceAll(t, "|", `\|`)
-	t = blankRunRe.ReplaceAllString(t, "\n\n")
 	t = strings.ReplaceAll(t, "\n\n", "<br><br>")
 	return strings.ReplaceAll(t, "\n", "<br>")
 }
@@ -813,15 +743,7 @@ func renderTaskList(n *Node, ctx *mdCtx) string {
 		if status == "complete" {
 			box = "[x]"
 		}
-		parts := strings.Split(body, "\n")
-		lines = append(lines, "- "+box+" "+parts[0])
-		for _, r := range parts[1:] {
-			if r == "" {
-				lines = append(lines, "")
-			} else {
-				lines = append(lines, "      "+r)
-			}
-		}
+		lines = append(lines, indentItem(body, "- "+box+" "))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -834,10 +756,7 @@ func renderMacro(n *Node, ctx *mdCtx) string {
 		return ""
 	}
 	params := macroParams(n)
-	plain := ""
-	if el := FindChild(n, "ac:plain-text-body"); el != nil {
-		plain = TextOf(el)
-	}
+	plain := TextOf(FindChild(n, "ac:plain-text-body"))
 	richEl := FindChild(n, "ac:rich-text-body")
 	rich := func() string {
 		if richEl == nil {
@@ -884,10 +803,7 @@ func renderMacro(n *Node, ctx *mdCtx) string {
 		return quote(inner)
 
 	case "expand":
-		title := params["title"]
-		if title == "" {
-			title = "Details"
-		}
+		title := cmp.Or(params["title"], "Details")
 		body := cmp.Or(rich(), plain)
 		return "<details>\n<summary>" + title + "</summary>\n\n" + body + "\n\n</details>"
 

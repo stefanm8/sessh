@@ -19,6 +19,23 @@ func mdWith(storage string, opts MarkdownOptions) string {
 	return ToMarkdown(storage, opts)
 }
 
+type stringCase struct {
+	name string
+	in   string
+	want string
+}
+
+func checkStrings(t *testing.T, convert func(string) string, cases []stringCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := convert(tc.in); got != tc.want {
+				t.Errorf("input %q: got %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // The XHTML parser
 // ---------------------------------------------------------------------------
@@ -114,36 +131,6 @@ func TestParseHTML(t *testing.T) {
 		}
 	})
 
-	t.Run("a tag left open at the end of the document keeps its content", func(t *testing.T) {
-		if got := TextOf(ParseHTML(`<p>a<em>b`)); got != "ab" {
-			t.Errorf("TextOf = %q, want ab", got)
-		}
-	})
-
-	t.Run("stray closing tags are ignored", func(t *testing.T) {
-		if got := TextOf(ParseHTML(`a</span>b`)); got != "ab" {
-			t.Errorf("TextOf = %q, want ab", got)
-		}
-	})
-
-	t.Run("comments are dropped", func(t *testing.T) {
-		if got := TextOf(ParseHTML(`a<!-- note -->b`)); got != "ab" {
-			t.Errorf("TextOf = %q, want ab", got)
-		}
-	})
-
-	t.Run("an unterminated comment eats the rest of the document", func(t *testing.T) {
-		if got := TextOf(ParseHTML(`a<!-- note b`)); got != "a" {
-			t.Errorf("TextOf = %q, want a", got)
-		}
-	})
-
-	t.Run("doctypes and processing instructions are dropped", func(t *testing.T) {
-		if got := TextOf(ParseHTML(`<?xml version="1.0"?><!DOCTYPE html>text`)); got != "text" {
-			t.Errorf("TextOf = %q, want text", got)
-		}
-	})
-
 	t.Run("attribute values may be double, single or unquoted", func(t *testing.T) {
 		root := ParseHTML(`<a href="d" title='s' rel=noquote data-x=1>x</a>`)
 		a := root.Children[0]
@@ -184,23 +171,23 @@ func TestParseHTML(t *testing.T) {
 		}
 	})
 
-	t.Run("a bare less-than in text is kept", func(t *testing.T) {
-		if got := TextOf(ParseHTML(`a < b`)); got != "a < b" {
-			t.Errorf("TextOf = %q, want %q", got, "a < b")
-		}
-	})
-
-	t.Run("text entities are decoded on the way in", func(t *testing.T) {
-		if got := TextOf(ParseHTML(`<p>a &amp; b &rarr; c</p>`)); got != "a & b → c" {
-			t.Errorf("TextOf = %q", got)
-		}
-	})
-
 	t.Run("empty input yields an empty root", func(t *testing.T) {
 		root := ParseHTML("")
 		if root == nil || root.Name != "#root" || len(root.Children) != 0 {
 			t.Errorf("ParseHTML(\"\") = %+v, want an empty #root", root)
 		}
+	})
+}
+
+func TestParseHTMLText(t *testing.T) {
+	checkStrings(t, func(in string) string { return TextOf(ParseHTML(in)) }, []stringCase{
+		{"a tag left open at the end of the document keeps its content", `<p>a<em>b`, "ab"},
+		{"stray closing tags are ignored", `a</span>b`, "ab"},
+		{"comments are dropped", `a<!-- note -->b`, "ab"},
+		{"an unterminated comment eats the rest of the document", `a<!-- note b`, "a"},
+		{"doctypes and processing instructions are dropped", `<?xml version="1.0"?><!DOCTYPE html>text`, "text"},
+		{"a bare less-than in text is kept", `a < b`, "a < b"},
+		{"text entities are decoded on the way in", `<p>a &amp; b &rarr; c</p>`, "a & b → c"},
 	})
 }
 
@@ -265,11 +252,7 @@ func TestNodeHelpers(t *testing.T) {
 }
 
 func TestDecodeEntities(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
+	checkStrings(t, DecodeEntities, []stringCase{
 		{"nothing to decode takes the fast path", "plain text", "plain text"},
 		{"the core five", "a&amp;b &lt;c&gt; &quot;d&quot; &apos;e&apos;", `a&b <c> "d" 'e'`},
 		{"decimal numeric references", "&#39;d&#39;", "'d'"},
@@ -289,14 +272,7 @@ func TestDecodeEntities(t *testing.T) {
 		{"an empty entity name is left alone", "&;", "&;"},
 		{"entity names are matched case-insensitively as a fallback", "&AMP;", "&"},
 		{"empty input", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := DecodeEntities(tt.in); got != tt.want {
-				t.Errorf("DecodeEntities(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -357,11 +333,7 @@ func TestIsBlockNode(t *testing.T) {
 }
 
 func TestTidy(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
+	checkStrings(t, tidy, []stringCase{
 		{"blank runs collapse to one blank line", "a\n\n\n\nb", "a\n\nb"},
 		{"a single blank line is preserved", "a\n\nb", "a\n\nb"},
 		{"a two-space hard break survives", "a  \nb", "a  \nb"},
@@ -373,22 +345,11 @@ func TestTidy(t *testing.T) {
 		{"leading and trailing whitespace is trimmed", "\n\n  a  \n\n", "a"},
 		{"empty stays empty", "", ""},
 		{"whitespace only collapses to empty", "\n \n\t\n", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tidy(tt.in); got != tt.want {
-				t.Errorf("tidy(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
+	})
 }
 
 func TestEscapeText(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
+	checkStrings(t, escapeText, []stringCase{
 		{"asterisks, brackets and angle brackets", "a * b [c] <d>", `a \* b \[c\] \<d>`},
 		{"backticks", "back`tick", "back\\`tick"},
 		{"backslashes", `a\b`, `a\\b`},
@@ -401,14 +362,7 @@ func TestEscapeText(t *testing.T) {
 		{"snake_case survives unescaped so identifiers stay readable", "my_var_name", "my_var_name"},
 		{"underscores are never escaped", "_leading and trailing_", "_leading and trailing_"},
 		{"empty stays empty", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := escapeText(tt.in); got != tt.want {
-				t.Errorf("escapeText(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
+	})
 }
 
 func TestFence(t *testing.T) {
@@ -437,11 +391,7 @@ func TestFence(t *testing.T) {
 }
 
 func TestMapLang(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
+	checkStrings(t, mapLang, []stringCase{
 		{"a known alias", "js", "javascript"},
 		{"typescript", "ts", "typescript"},
 		{"python", "py", "python"},
@@ -460,14 +410,7 @@ func TestMapLang(t *testing.T) {
 		{"a plus sign is allowed through", "notreal++", "notreal++"},
 		{"empty stays empty", "", ""},
 		{"whitespace only is empty", "   ", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := mapLang(tt.in); got != tt.want {
-				t.Errorf("mapLang(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -475,11 +418,7 @@ func TestMapLang(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToMarkdownBasics(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
+	checkStrings(t, md, []stringCase{
 		{"empty input", "", ""},
 		{"whitespace only", "   \n  ", ""},
 		{"headings", "<h1>One</h1><h3>Three</h3>", "# One\n\n### Three"},
@@ -566,14 +505,7 @@ func TestToMarkdownBasics(t *testing.T) {
 			"<p>a</p>loose<p>b</p>", "a\n\nloose\n\nb"},
 		{"blank blocks are dropped rather than leaving holes",
 			"<p>a</p><p>   </p><p>b</p>", "a\n\nb"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := md(tt.in); got != tt.want {
-				t.Errorf("ToMarkdown(%q) =\n  %q\nwant\n  %q", tt.in, got, tt.want)
-			}
-		})
-	}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -581,11 +513,7 @@ func TestToMarkdownBasics(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToMarkdownTables(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
+	checkStrings(t, md, []stringCase{
 		{
 			name: "a th header row becomes the Markdown header",
 			in:   "<table><tbody><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></tbody></table>",
@@ -663,14 +591,7 @@ func TestToMarkdownTables(t *testing.T) {
 			in:   `<table><tbody><tr><th>A</th></tr><tr><td><a href="https://docs.example">d</a></td></tr></tbody></table>`,
 			want: "| A |\n| --- |\n| [d](https://docs.example) |",
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := md(tt.in); got != tt.want {
-				t.Errorf("ToMarkdown(%q) =\n  %q\nwant\n  %q", tt.in, got, tt.want)
-			}
-		})
-	}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -678,11 +599,7 @@ func TestToMarkdownTables(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToMarkdownMacros(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
+	checkStrings(t, md, []stringCase{
 		{
 			name: "the code macro uses its language parameter and CDATA body",
 			in: `<ac:structured-macro ac:name="code">` +
@@ -900,14 +817,7 @@ func TestToMarkdownMacros(t *testing.T) {
 			in:   `<p>a<ac:placeholder>type here</ac:placeholder>b</p>`,
 			want: "ab",
 		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := md(tt.in); got != tt.want {
-				t.Errorf("ToMarkdown(%q) =\n  %q\nwant\n  %q", tt.in, got, tt.want)
-			}
-		})
-	}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,11 +1018,7 @@ func TestToMarkdownACImage(t *testing.T) {
 }
 
 func TestToMarkdownEmoticons(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
+	checkStrings(t, md, []stringCase{
 		{"a known emoticon becomes its unicode character", `<p><ac:emoticon ac:name="tick"/> ok</p>`, "✅ ok"},
 		{"thumbs up", `<p><ac:emoticon ac:name="thumbs-up"/></p>`, "👍"},
 		{"the emoji fallback attribute wins over the name",
@@ -1125,14 +1031,7 @@ func TestToMarkdownEmoticons(t *testing.T) {
 			`<p><ac:emoticon ac:name="mystery"/></p>`, ":mystery:"},
 		{"names are matched case-insensitively", `<p><ac:emoticon ac:name="TICK"/></p>`, "✅"},
 		{"an emoticon with nothing at all renders nothing", `<p>a<ac:emoticon/>b</p>`, "ab"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := md(tt.in); got != tt.want {
-				t.Errorf("ToMarkdown(%q) = %q, want %q", tt.in, got, tt.want)
-			}
-		})
-	}
+	})
 }
 
 func TestToMarkdownProfileMacro(t *testing.T) {

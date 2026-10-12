@@ -92,36 +92,3 @@ func LookupIdentity(ctx context.Context, s Session) Identity {
 	id, _ := s.Whoami(ctx)
 	return id
 }
-
-// CurrentURL observes navigation without reloading a page or login form.
-func (s *browserSession) CurrentURL(ctx context.Context) (string, error) {
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	return s.page.URL(), nil
-}
-
-func (s *rpcClient) CurrentURL(ctx context.Context) (string, error) {
-	var href string
-	err := s.Eval(ctx, `() => location.href`, nil, &href)
-	return href, err
-}
-
-func (o observer) CurrentURL(ctx context.Context) (string, error) {
-	return o.Navigate(ctx, "")
-}
-
-func currentURL(ctx context.Context, s Session, fallback string) (string, error) {
-	if page, ok := s.(interface {
-		CurrentURL(context.Context) (string, error)
-	}); ok {
-		return page.CurrentURL(ctx)
-	}
-	return fallback, nil
-}
-
-// IsNavigationTransient identifies a page execution context replaced by an
-// in-progress redirect. Other browser failures must not be silently polled.
-func IsNavigationTransient(err error) bool {
-	return err != nil && isContextDestroyed(err)
-}

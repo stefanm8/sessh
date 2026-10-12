@@ -130,10 +130,18 @@ type verificationSession struct {
 	Session
 	navigate   func(context.Context, string) (string, error)
 	remembered Identity
+	url        string
 }
 
 func (s *verificationSession) Navigate(ctx context.Context, rawurl string) (string, error) {
-	return s.navigate(ctx, rawurl)
+	var err error
+	s.url, err = s.navigate(ctx, rawurl)
+	return s.url, err
+}
+
+func (s *verificationSession) Eval(_ context.Context, _ string, _, out any) error {
+	*out.(*string) = s.url
+	return nil
 }
 
 func (s *verificationSession) RememberIdentity(id Identity) { s.remembered = id }
@@ -285,6 +293,58 @@ func TestCachedIdentityNeverRequestsMetadata(t *testing.T) {
 			RememberIdentity(s, Identity{AccountID: "verified"})
 			if id := CachedIdentity(Observe(s)); id.AccountID != "verified" || calls != 0 {
 				t.Fatalf("remembered identity = %+v with %d metadata requests", id, calls)
+			}
+		})
+	}
+}
+
+// Service plugins test identity decoding; the shared SSO contract belongs here.
+func TestVerifySSO(t *testing.T) {
+	failure := errors.New("connection failed")
+	for _, tt := range []struct {
+		name, url             string
+		signedInAt, failAt    int
+		navErr, want          error
+		requests, navigations int
+	}{
+		{"valid session", "", 1, 0, nil, nil, 1, 0},
+		{"silent SSO completed", "https://tenant.example/app", 2, 0, nil, nil, 2, 1},
+		{"Atlassian login", "https://id.atlassian.com/login", 0, 0, nil, ErrAuth, 2, 1},
+		{"tenant login", "https://tenant.example/login", 0, 0, nil, ErrAuth, 2, 1},
+		{"cookie minted at login redirect", "https://id.atlassian.com/login", 2, 0, nil, nil, 2, 1},
+		{"pending SSO", "https://tenant.example/app", 3, 0, nil, nil, 3, 1},
+		{"initial identity failure", "", 0, 1, nil, failure, 1, 0},
+		{"identity failure after navigation", "https://id.atlassian.com/login", 0, 2, nil, failure, 2, 1},
+		{"navigation failure", "", 0, 0, failure, failure, 1, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			requests, navigations := 0, 0
+			s := &verificationSession{navigate: func(context.Context, string) (string, error) {
+				navigations++
+				return tt.url, tt.navErr
+			}}
+			// Completed decisions must finish before the 1.5-second poll interval.
+			timeout := time.Second
+			if tt.signedInAt == 3 {
+				timeout = 3 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			err := VerifySSO(ctx, s, "https://tenant.example/app", func(context.Context, Session) (Identity, error) {
+				requests++
+				if requests == tt.failAt {
+					return Identity{}, failure
+				}
+				if tt.signedInAt > 0 && requests >= tt.signedInAt {
+					return Identity{AccountID: "account"}, nil
+				}
+				return Identity{DisplayName: "Anonymous"}, nil
+			})
+			if !errors.Is(err, tt.want) || requests != tt.requests || navigations != tt.navigations {
+				t.Fatalf("error=%v, requests=%d, navigations=%d; want %v, %d, %d", err, requests, navigations, tt.want, tt.requests, tt.navigations)
+			}
+			if (tt.want == nil) != (s.remembered.AccountID == "account") {
+				t.Fatalf("remembered identity=%+v after error=%v", s.remembered, err)
 			}
 		})
 	}

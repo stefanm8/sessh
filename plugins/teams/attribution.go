@@ -1,7 +1,6 @@
 package teams
 
 import (
-	"encoding/json"
 	"encoding/xml"
 	"regexp"
 	"strings"
@@ -291,17 +290,6 @@ func normalizeMessageAttribution(m *Message, raw map[string]any, resolver *ident
 	default:
 		m.AuthorStatus = authorUnresolved
 	}
-}
-
-func recoverStoredAttribution(m *Message) {
-	if m == nil {
-		return
-	}
-	var raw map[string]any
-	if len(m.Raw) > 0 {
-		_ = json.Unmarshal(m.Raw, &raw)
-	}
-	normalizeMessageAttribution(m, raw, nil)
 }
 
 func authorLabel(m *Message) string {

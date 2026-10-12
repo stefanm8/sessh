@@ -175,26 +175,28 @@ const prFields = "values.id,values.title,values.state,values.author.display_name
 
 // ListRepos lists repositories in the workspace, most-recently-updated first.
 func ListRepos(ctx context.Context, s session.Session, workspace string, max int) (*List[Repo], error) {
-	params := url.Values{}
-	params.Set("sort", "-updated_on")
-	params.Set("fields", repoFields)
+	params := url.Values{"sort": {"-updated_on"}, "fields": {repoFields}}
 	return paginate[Repo](ctx, s, apiPath("/repositories/"+workspace), params, max)
 }
 
 // GetRepo fetches one repository.
 func GetRepo(ctx context.Context, s session.Session, workspace, repo string) (*Repo, json.RawMessage, error) {
-	raw, err := session.Get(ctx, s, apiPath("/repositories/"+workspace+"/"+repo))
+	return get[Repo](ctx, s, apiPath("/repositories/"+workspace+"/"+repo), "repository "+workspace+"/"+repo)
+}
+
+func get[T any](ctx context.Context, s session.Session, path, what string) (*T, json.RawMessage, error) {
+	raw, err := session.Get(ctx, s, path)
 	if err != nil {
 		return nil, nil, err
 	}
 	if !raw.OK {
-		return nil, nil, apiError(raw, "repository "+workspace+"/"+repo)
+		return nil, nil, apiError(raw, what)
 	}
-	var r Repo
-	if err := raw.Decode(&r); err != nil {
+	var item T
+	if err := raw.Decode(&item); err != nil {
 		return nil, nil, err
 	}
-	return &r, raw.JSON, nil
+	return &item, raw.JSON, nil
 }
 
 // ListPullRequests lists PRs in the given states.
@@ -214,18 +216,7 @@ func ListPullRequests(ctx context.Context, s session.Session, workspace, repo st
 // GetPullRequest fetches one PR in full.
 func GetPullRequest(ctx context.Context, s session.Session, workspace, repo string, id int) (*PullRequest, json.RawMessage, error) {
 	path := fmt.Sprintf("%s/repositories/%s/%s/pullrequests/%d", apiPrefix, workspace, repo, id)
-	raw, err := session.Get(ctx, s, path)
-	if err != nil {
-		return nil, nil, err
-	}
-	if !raw.OK {
-		return nil, nil, apiError(raw, fmt.Sprintf("pull request #%d", id))
-	}
-	var p PullRequest
-	if err := raw.Decode(&p); err != nil {
-		return nil, nil, err
-	}
-	return &p, raw.JSON, nil
+	return get[PullRequest](ctx, s, path, fmt.Sprintf("pull request #%d", id))
 }
 
 // apiError turns Bitbucket's error envelope into a readable one-liner.
@@ -243,9 +234,7 @@ func apiError(raw *session.Raw, what string) error {
 
 // ListPullRequestStatuses lists every build status attached to a PR.
 func ListPullRequestStatuses(ctx context.Context, s session.Session, workspace, repo string, id, max int) (*List[Status], error) {
-	params := url.Values{}
-	params.Set("sort", "-updated_on")
-	params.Set("pagelen", "100")
+	params := url.Values{"sort": {"-updated_on"}}
 	base := fmt.Sprintf("%s/repositories/%s/%s/pullrequests/%d/statuses", apiPrefix, workspace, repo, id)
 	return paginate[Status](ctx, s, base, params, max)
 }
@@ -256,10 +245,7 @@ func ListPipelinesForCommit(ctx context.Context, s session.Session, workspace, r
 	if commit == "" {
 		return &List[Pipeline]{}, nil
 	}
-	params := url.Values{}
-	params.Set("target.commit.hash", commit)
-	params.Set("sort", "-created_on")
-	params.Set("pagelen", "100")
+	params := url.Values{"target.commit.hash": {commit}, "sort": {"-created_on"}}
 	return paginate[Pipeline](ctx, s, apiPath("/repositories/"+workspace+"/"+repo+"/pipelines"), params, max)
 }
 

@@ -1,6 +1,7 @@
 package teams
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,81 +87,51 @@ func TestResolveConversations(t *testing.T) {
 		&Conversation{ID: "19:bbb@thread.v2", Title: "Design Sync", Members: []string{"Alex Example"}},
 		&Conversation{ID: "19:ccc@thread.v2", Title: "Backend Standup"},
 	)
-
-	t.Run("no terms means no filtering at all", func(t *testing.T) {
-		test, err := resolveConversations(nil, dir)
-		if err != nil {
-			t.Fatalf("error = %v", err)
-		}
-		if test != nil {
-			t.Error("resolveConversations(nil) should return a nil matcher, not a match-everything one")
-		}
-	})
-
-	t.Run("an exact id is never ambiguous", func(t *testing.T) {
-		test, err := resolveConversations([]string{"19:aaa@thread.v2"}, dir)
-		if err != nil {
-			t.Fatalf("error = %v", err)
-		}
-		if !test("19:aaa@thread.v2") {
-			t.Error("the exact id should match")
-		}
-		if test("19:bbb@thread.v2") {
-			t.Error("a different id should not match")
-		}
-	})
-
-	t.Run("a unique name resolves to its id", func(t *testing.T) {
-		test, err := resolveConversations([]string{"Design"}, dir)
-		if err != nil {
-			t.Fatalf("error = %v", err)
-		}
-		if !test("19:bbb@thread.v2") || test("19:aaa@thread.v2") {
-			t.Error("Design should resolve to exactly the Design Sync conversation")
-		}
-	})
-
-	t.Run("names match case-insensitively", func(t *testing.T) {
-		if _, err := resolveConversations([]string{"design sync"}, dir); err != nil {
-			t.Errorf("error = %v", err)
-		}
-	})
-
-	t.Run("a member name is searchable", func(t *testing.T) {
-		test, err := resolveConversations([]string{"Alex Example"}, dir)
-		if err != nil {
-			t.Fatalf("error = %v", err)
-		}
-		if !test("19:bbb@thread.v2") {
-			t.Error("a member name should resolve to their chat")
-		}
-	})
-
-	t.Run("a channel or team name is searchable", func(t *testing.T) {
-		if _, err := resolveConversations([]string{"Engineering"}, dir); err != nil {
-			t.Errorf("error = %v", err)
-		}
-	})
-
-	t.Run("an ambiguous term is a usage error listing the candidates", func(t *testing.T) {
-		_, err := resolveConversations([]string{"Backend"}, dir)
-		if err == nil {
-			t.Fatal("want an error rather than a guess")
-		}
-		msg := err.Error()
-		for _, want := range []string{"ambiguous", "19:aaa@thread.v2", "19:ccc@thread.v2"} {
-			if !strings.Contains(msg, want) {
-				t.Errorf("error %q does not mention %q", msg, want)
+	for _, tc := range []struct {
+		name  string
+		terms []string
+		want  []string
+	}{
+		{"no terms means no filtering at all", nil, nil},
+		{"an exact id is never ambiguous", []string{"19:aaa@thread.v2"}, []string{"19:aaa@thread.v2"}},
+		{"a unique name resolves to its id", []string{"Design"}, []string{"19:bbb@thread.v2"}},
+		{"names match case-insensitively", []string{"design sync"}, []string{"19:bbb@thread.v2"}},
+		{"a member name is searchable", []string{"Alex Example"}, []string{"19:bbb@thread.v2"}},
+		{"a channel or team name is searchable", []string{"Engineering"}, []string{"19:aaa@thread.v2"}},
+		{"an unseen raw id still filters by prefix", []string{"19:zzz"}, []string{"19:zzz@thread.v2"}},
+		{"an id prefix resolves when it is unambiguous", []string{"19:aaa"}, []string{"19:aaa@thread.v2"}},
+		{"several terms are ORed together", []string{"Design", "19:ccc@thread.v2"}, []string{"19:bbb@thread.v2", "19:ccc@thread.v2"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			match, err := resolveConversations(tc.terms, dir)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
-	})
+			if tc.terms == nil {
+				if match != nil {
+					t.Fatal("no terms should return a nil matcher")
+				}
+				return
+			}
+			for _, id := range []string{"19:aaa@thread.v2", "19:bbb@thread.v2", "19:ccc@thread.v2", "19:zzz@thread.v2"} {
+				if got, want := match(id), slices.Contains(tc.want, id); got != want {
+					t.Errorf("match(%q) = %v, want %v", id, got, want)
+				}
+			}
+		})
+	}
 
-	t.Run("the candidate list is ordered deterministically across runs", func(t *testing.T) {
+	t.Run("ambiguous candidates are informative and deterministic", func(t *testing.T) {
 		var first string
 		for i := 0; i < 20; i++ {
 			_, err := resolveConversations([]string{"Backend"}, dir)
 			if err == nil {
-				t.Fatal("want an error")
+				t.Fatal("want an error rather than a guess")
+			}
+			for _, want := range []string{"ambiguous", "19:aaa@thread.v2", "19:ccc@thread.v2"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
 			}
 			if i == 0 {
 				first = err.Error()
@@ -172,58 +143,19 @@ func TestResolveConversations(t *testing.T) {
 
 	t.Run("a term matching nothing is a usage error", func(t *testing.T) {
 		_, err := resolveConversations([]string{"nowhere"}, dir)
-		if err == nil {
-			t.Fatal("want an error")
-		}
-		if !strings.Contains(err.Error(), "no conversation matches") {
-			t.Errorf("error = %q", err)
-		}
-	})
-
-	t.Run("an unseen raw id still filters by prefix", func(t *testing.T) {
-		test, err := resolveConversations([]string{"19:zzz"}, dir)
-		if err != nil {
-			t.Fatalf("error = %v, want the raw id to be accepted", err)
-		}
-		if !test("19:zzz@thread.v2") {
-			t.Error("the prefix should match a conversation the sidecar has never seen")
-		}
-	})
-
-	t.Run("an id prefix resolves when it is unambiguous", func(t *testing.T) {
-		test, err := resolveConversations([]string{"19:aaa"}, dir)
-		if err != nil {
-			t.Fatalf("error = %v", err)
-		}
-		if !test("19:aaa@thread.v2") {
-			t.Error("an id prefix should match")
-		}
-	})
-
-	t.Run("several terms are ORed together", func(t *testing.T) {
-		test, err := resolveConversations([]string{"Design", "19:ccc@thread.v2"}, dir)
-		if err != nil {
-			t.Fatalf("error = %v", err)
-		}
-		if !test("19:bbb@thread.v2") || !test("19:ccc@thread.v2") {
-			t.Error("both terms should match")
-		}
-		if test("19:aaa@thread.v2") {
-			t.Error("an unnamed conversation should not match")
+		if err == nil || !strings.Contains(err.Error(), "no conversation matches") {
+			t.Fatalf("error = %v, want no conversation matches", err)
 		}
 	})
 
 	t.Run("without a sidecar only ids and prefixes are available", func(t *testing.T) {
 		for _, d := range []*Directory{nil, {Map: map[string]*Conversation{}}} {
-			test, err := resolveConversations([]string{"19:aaa"}, d)
+			match, err := resolveConversations([]string{"19:aaa"}, d)
 			if err != nil {
-				t.Fatalf("error = %v", err)
+				t.Fatal(err)
 			}
-			if !test("19:aaa@thread.v2") {
-				t.Error("prefix matching should still work with no sidecar")
-			}
-			if test("19:bbb@thread.v2") {
-				t.Error("a different id should not match")
+			if !match("19:aaa@thread.v2") || match("19:bbb@thread.v2") {
+				t.Error("only the matching id prefix should match")
 			}
 		}
 	})
@@ -509,66 +441,31 @@ func TestBuildFilter(t *testing.T) {
 		}
 	})
 
-	t.Run("system messages are excluded by default", func(t *testing.T) {
-		f, cmd := newFilterCmd(t)
-		spec, err := f.buildFilter(cmd, nil, clock)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if spec.includeSystem {
-			t.Error("includeSystem should be false by default")
-		}
-	})
-
-	t.Run("--include-system opts back in", func(t *testing.T) {
-		f, cmd := newFilterCmd(t, "--include-system")
-		spec, err := f.buildFilter(cmd, nil, clock)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !spec.includeSystem {
-			t.Error("--include-system should include system messages")
-		}
-	})
-
-	t.Run("--only-messages=false opts back in", func(t *testing.T) {
-		f, cmd := newFilterCmd(t, "--only-messages=false")
-		spec, err := f.buildFilter(cmd, nil, clock)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !spec.includeSystem {
-			t.Error("explicitly turning --only-messages off should include system messages")
-		}
-	})
-
-	t.Run("an explicit system --type wins over the default filter", func(t *testing.T) {
-		// The footgun this guards: asking for ThreadActivity/AddMember while the
-		// default --only-messages silently drops exactly that type.
-		f, cmd := newFilterCmd(t, "--type", "ThreadActivity/AddMember")
-		spec, err := f.buildFilter(cmd, nil, clock)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !spec.includeSystem {
-			t.Fatal("asking for a system type should include system messages")
-		}
-		keep := buildPredicate(spec)
-		if !keep(&Message{MessageType: "ThreadActivity/AddMember"}) {
-			t.Error("the explicitly requested type should survive the filter")
-		}
-	})
-
-	t.Run("a non-system --type does not re-enable system messages", func(t *testing.T) {
-		f, cmd := newFilterCmd(t, "--type", "Text")
-		spec, err := f.buildFilter(cmd, nil, clock)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if spec.includeSystem {
-			t.Error("a normal --type should leave the system filter alone")
-		}
-	})
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"system messages are excluded by default", nil, false},
+		{"--include-system opts back in", []string{"--include-system"}, true},
+		{"--only-messages=false opts back in", []string{"--only-messages=false"}, true},
+		{"an explicit system --type wins over the default filter", []string{"--type", "ThreadActivity/AddMember"}, true},
+		{"a non-system --type does not re-enable system messages", []string{"--type", "Text"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f, cmd := newFilterCmd(t, tc.args...)
+			spec, err := f.buildFilter(cmd, nil, clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if spec.includeSystem != tc.want {
+				t.Errorf("includeSystem = %v, want %v", spec.includeSystem, tc.want)
+			}
+			if got := buildPredicate(spec)(&Message{MessageType: "ThreadActivity/AddMember"}); got != tc.want {
+				t.Errorf("system message kept = %v, want %v", got, tc.want)
+			}
+		})
+	}
 
 	t.Run("an unresolvable --conversation is a usage error", func(t *testing.T) {
 		dir := testDirectory(&Conversation{ID: "19:a", Title: "Backend"})

@@ -260,30 +260,6 @@ func TestBrowserCookiesKeepTransportFailure(t *testing.T) {
 	}
 }
 
-func TestCachedIdentityDoesNotAccessBrowserOrRPC(t *testing.T) {
-	id := Identity{AccountID: "already-verified", DisplayName: "Test User"}
-	for _, tt := range []struct {
-		name    string
-		session interface {
-			RememberIdentity(Identity)
-			CachedIdentity() Identity
-		}
-	}{
-		{"browser", &browserSession{}},
-		{"RPC", &rpcClient{}},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := tt.session.CachedIdentity(); !got.Empty() {
-				t.Fatalf("initial cached identity = %+v", got)
-			}
-			tt.session.RememberIdentity(id)
-			if got := tt.session.CachedIdentity(); got != id {
-				t.Fatalf("cached identity = %+v; wanted %+v", got, id)
-			}
-		})
-	}
-}
-
 func TestDriverVersionMatchesGoBinding(t *testing.T) {
 	t.Setenv("PLAYWRIGHT_DRIVER_PATH", t.TempDir())
 	driver, err := playwright.NewDriver()

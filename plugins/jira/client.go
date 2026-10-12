@@ -271,9 +271,6 @@ func printLine(cmd *cobra.Command, label, value string, width int) {
 	if strings.TrimSpace(value) == "" {
 		return
 	}
-	pad := width - len(label)
-	if pad < 0 {
-		pad = 0
-	}
+	pad := max(0, width-len(label))
 	fmt.Fprintln(cmd.OutOrStdout(), format.Gray(label+strings.Repeat(" ", pad))+" "+value)
 }

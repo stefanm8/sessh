@@ -135,35 +135,29 @@ func (f *queryFlags) bindHeadTail(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.tail, "tail", "", "sugar: newest N (== --order desc --limit N)")
 }
 
-func (f *queryFlags) bindFormat(cmd *cobra.Command) {
-	cmd.Flags().StringVarP(&f.outputFormat, "format", "f", "",
+// bindOutput shares the flags common to all formats; row commands additionally
+// support field projection and raw provider payloads.
+func (f *queryFlags) bindOutput(cmd *cobra.Command, rows, count bool) {
+	fl := cmd.Flags()
+	fl.StringVarP(&f.outputFormat, "format", "f", "",
 		"output format: json | jsonl | table | text | csv (default: table on a terminal, json when piped)")
+	fl.BoolVar(&f.pretty, "pretty", false, "pretty-print JSON (default JSON is compact)")
+	if rows {
+		fl.StringVar(&f.fields, "fields", "", "comma-separated field projection, e.g. time,sender,body")
+		fl.BoolVar(&f.raw, "raw", false, "include the original provider payload (json/jsonl only)")
+	}
+	if count {
+		fl.BoolVar(&f.count, "count", false, "print only the number of matching rows")
+	}
 }
 
-func (f *queryFlags) bindFields(cmd *cobra.Command) {
-	cmd.Flags().StringVar(&f.fields, "fields", "", "comma-separated field projection, e.g. time,sender,body")
-}
-
-func (f *queryFlags) bindRaw(cmd *cobra.Command) {
-	cmd.Flags().BoolVar(&f.raw, "raw", false, "include the original provider payload (json/jsonl only)")
-}
-
-func (f *queryFlags) bindPretty(cmd *cobra.Command) {
-	cmd.Flags().BoolVar(&f.pretty, "pretty", false, "pretty-print JSON (default JSON is compact)")
-}
-
-func (f *queryFlags) bindCount(cmd *cobra.Command) {
-	cmd.Flags().BoolVar(&f.count, "count", false, "print only the number of matching rows")
-}
-
-// bindMessageOutput is the full output block shared by every row-producing
-// command.
-func (f *queryFlags) bindMessageOutput(cmd *cobra.Command) {
-	f.bindFormat(cmd)
-	f.bindFields(cmd)
-	f.bindRaw(cmd)
-	f.bindCount(cmd)
-	f.bindPretty(cmd)
+func (f *queryFlags) bindMessageQuery(cmd *cobra.Command) {
+	f.bindFilter(cmd)
+	f.bindSortOrder(cmd, messageSortKeys)
+	f.bindLimitOffset(cmd, `max rows; 0 or "all" for no limit (default 50)`)
+	f.bindHeadTail(cmd)
+	f.bindOutput(cmd, true, true)
+	f.bindSource(cmd)
 }
 
 func (f *queryFlags) renderOpts(outFormat string) renderOpts {
@@ -289,12 +283,7 @@ System noise (ThreadActivity/* and Event/*) is dropped by default; pass
 			return runMessageQuery(cmd, f, nil)
 		},
 	}
-	f.bindFilter(cmd)
-	f.bindSortOrder(cmd, messageSortKeys)
-	f.bindLimitOffset(cmd, `max rows; 0 or "all" for no limit (default 50)`)
-	f.bindHeadTail(cmd)
-	f.bindMessageOutput(cmd)
-	f.bindSource(cmd)
+	f.bindMessageQuery(cmd)
 	cmd.Flags().BoolVar(&f.offline, "offline", false, "read saved messages without starting or waiting for capture")
 	cmd.Flags().BoolVar(&f.noScroll, "no-scroll", false, "disable chat scrolling when starting a new capture daemon")
 	cmd.Flags().DurationVar(&f.captureTimeout, "capture-timeout", 2*time.Minute, "maximum wait for capture to complete its first successful harvest")
@@ -325,12 +314,7 @@ explicit --grep terms must ALSO match.`,
 			return runMessageQuery(cmd, f, args[:1])
 		},
 	}
-	f.bindFilter(cmd)
-	f.bindSortOrder(cmd, messageSortKeys)
-	f.bindLimitOffset(cmd, `max rows; 0 or "all" for no limit (default 50)`)
-	f.bindHeadTail(cmd)
-	f.bindMessageOutput(cmd)
-	f.bindSource(cmd)
+	f.bindMessageQuery(cmd)
 	return cmd
 }
 
@@ -435,10 +419,7 @@ In json/jsonl this prints a single OBJECT rather than a one-element array.`,
 			return nil
 		},
 	}
-	f.bindRaw(cmd)
-	f.bindPretty(cmd)
-	f.bindFormat(cmd)
-	f.bindFields(cmd)
+	f.bindOutput(cmd, true, false)
 	f.bindSource(cmd)
 	return cmd
 }
@@ -553,7 +534,7 @@ this week" rather than "who has ever posted".`,
 	f.bindFilter(cmd)
 	cmd.Flags().StringVarP(&f.order, "order", "o", "", "sort direction: asc or desc")
 	cmd.Flags().StringVarP(&f.limit, "limit", "n", "", "max rows (default: all)")
-	f.bindMessageOutput(cmd)
+	f.bindOutput(cmd, true, true)
 	f.bindSource(cmd)
 	return cmd
 }
@@ -725,7 +706,7 @@ threads have never been opened, so it doubles as a discovery command.`,
 	f.bindFilter(cmd)
 	f.bindSortOrder(cmd, "last | count | title")
 	f.bindLimitOffset(cmd, `max rows; 0 or "all" for no limit (default: all)`)
-	f.bindMessageOutput(cmd)
+	f.bindOutput(cmd, true, true)
 	f.bindSource(cmd)
 	return cmd
 }
@@ -824,9 +805,7 @@ one-command answer to "what happened today, and where".`,
 		},
 	}
 	f.bindFilter(cmd)
-	f.bindFormat(cmd)
-	f.bindPretty(cmd)
-	f.bindCount(cmd)
+	f.bindOutput(cmd, false, true)
 	f.bindSource(cmd)
 	return cmd
 }
@@ -1085,7 +1064,6 @@ reading the human help.`,
 			return nil
 		},
 	}
-	f.bindFormat(cmd)
-	f.bindPretty(cmd)
+	f.bindOutput(cmd, false, false)
 	return cmd
 }

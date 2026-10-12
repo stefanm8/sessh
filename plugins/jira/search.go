@@ -2,6 +2,7 @@ package jira
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 )
@@ -11,6 +12,10 @@ type searchFilters struct {
 	unassigned                                 bool
 }
 
+var meRe = regexp.MustCompile(`(?i)^(me|@me|current(user)?)$`)
+
+func escapeJQL(s string) string { return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s) }
+
 func (f searchFilters) empty() bool {
 	return f.issueType == "" && f.priority == "" && f.label == "" && f.reporter == "" && f.text == "" && !f.unassigned
 }
@@ -18,17 +23,16 @@ func buildSearchJQL(project, status, assignee, raw string, f searchFilters) stri
 	if raw != "" {
 		return raw
 	}
-	base := strings.TrimSuffix(BuildJQL(project, status, assignee, ""), "ORDER BY updated DESC")
 	clauses := []string{}
-	if strings.TrimSpace(base) != "" {
-		clauses = append(clauses, strings.TrimSpace(base))
-	}
-	for _, v := range []struct{ name, value string }{{"issuetype", f.issueType}, {"priority", f.priority}, {"labels", f.label}, {"reporter", f.reporter}} {
+	for _, v := range []struct{ name, value string }{
+		{"project", project}, {"status", status}, {"assignee", assignee},
+		{"issuetype", f.issueType}, {"priority", f.priority}, {"labels", f.label}, {"reporter", f.reporter},
+	} {
 		if v.value == "" {
 			continue
 		}
-		if v.name == "reporter" && meRe.MatchString(v.value) {
-			clauses = append(clauses, "reporter = currentUser()")
+		if (v.name == "reporter" || v.name == "assignee") && meRe.MatchString(v.value) {
+			clauses = append(clauses, v.name+" = currentUser()")
 		} else {
 			clauses = append(clauses, fmt.Sprintf(`%s = "%s"`, v.name, escapeJQL(v.value)))
 		}

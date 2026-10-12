@@ -1,6 +1,7 @@
 package bitbucket
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"sort"
@@ -43,15 +44,16 @@ func resolveStates(flag string) []string {
 }
 
 func stateColor(state string) string {
-	switch strings.ToUpper(state) {
+	state = strings.ToUpper(state)
+	switch state {
 	case "OPEN":
-		return format.Green(strings.ToUpper(state))
+		return format.Green(state)
 	case "MERGED":
-		return format.Magenta(strings.ToUpper(state))
+		return format.Magenta(state)
 	case "DECLINED", "SUPERSEDED":
-		return format.Red(strings.ToUpper(state))
+		return format.Red(state)
 	default:
-		return format.Gray(strings.ToUpper(state))
+		return format.Gray(state)
 	}
 }
 
@@ -94,7 +96,7 @@ func prListCommand(b *Bitbucket) *cobra.Command {
 					return format.PrintJSON(prs.Raw)
 				}
 				if len(prs.Items) == 0 {
-					fmt.Printf("No %s pull requests in %s/%s.\n", strings.ToLower(orDefault(state, "open")), ws, repo)
+					fmt.Printf("No %s pull requests in %s/%s.\n", strings.ToLower(cmp.Or(state, "open")), ws, repo)
 					return nil
 				}
 				rows := make([][]string, 0, len(prs.Items))
@@ -120,13 +122,6 @@ func prListCommand(b *Bitbucket) *cobra.Command {
 	cmd.Flags().StringVar(&state, "state", "open", "open | merged | declined | closed | all")
 	cmd.Flags().BoolVar(&web, "web", false, "open the page in your default browser instead")
 	return cmd
-}
-
-func orDefault(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }
 
 func prViewCommand(b *Bitbucket) *cobra.Command {
@@ -157,11 +152,7 @@ func prViewCommand(b *Bitbucket) *cobra.Command {
 					return format.PrintJSON(raw)
 				}
 				fmt.Println(format.Bold(fmt.Sprintf("#%d %s", p.ID, p.Title)))
-				author := p.Author.DisplayName
-				if author == "" {
-					author = "unknown"
-				}
-				fmt.Println(stateColor(p.State) + format.Gray(fmt.Sprintf(" • %s • %s", author, format.RelativeTime(p.CreatedOn))))
+				fmt.Println(stateColor(p.State) + format.Gray(fmt.Sprintf(" • %s • %s", cmp.Or(p.Author.DisplayName, "unknown"), format.RelativeTime(p.CreatedOn))))
 				fmt.Println(format.Gray(branchOf(*p)))
 				fmt.Println()
 				if body := strings.TrimSpace(p.Summary.Raw); body != "" {
@@ -246,12 +237,9 @@ Exit codes follow gh, so this works as a CI gate:
 
 				if asJSON {
 					if err := format.PrintJSON(struct {
-						PullRequest any        `json:"pull_request"`
-						Commit      string     `json:"commit"`
-						Statuses    []Status   `json:"statuses"`
-						Pipelines   []Pipeline `json:"pipelines"`
-						Checks      []Check    `json:"checks"`
-					}{result.PullRequestRaw, result.Commit, result.Statuses, result.Pipelines, checks}); err != nil {
+						*Checks
+						Combined []Check `json:"checks"`
+					}{result, checks}); err != nil {
 						return err
 					}
 					return plugin.Exit(code)
@@ -263,15 +251,11 @@ Exit codes follow gh, so this works as a CI gate:
 				}
 				rows := make([][]string, 0, len(checks))
 				for _, c := range checks {
-					when := c.UpdatedOn
-					if when == "" {
-						when = c.CreatedOn
-					}
 					rows = append(rows, []string{
 						format.Truncate(c.Name, 45),
 						checkStateColor(c.State),
 						format.Gray(c.Type),
-						format.Gray(format.RelativeTime(when)),
+						format.Gray(format.RelativeTime(cmp.Or(c.UpdatedOn, c.CreatedOn))),
 						c.URL,
 					})
 				}
@@ -296,19 +280,9 @@ func CombineChecks(statuses []Status, pipelines []Pipeline) []Check {
 	out := make([]Check, 0, len(statuses)+len(pipelines))
 	statusURLs := map[string]bool{}
 	for _, st := range statuses {
-		name := st.Name
-		if name == "" {
-			name = st.Key
-		}
-		if name == "" {
-			name = "Build status"
-		}
-		state := strings.ToUpper(st.State)
-		if state == "" {
-			state = "UNKNOWN"
-		}
 		out = append(out, Check{
-			Type: "status", Key: st.Key, Name: name, State: state,
+			Type: "status", Key: st.Key, Name: cmp.Or(st.Name, st.Key, "Build status"),
+			State:       cmp.Or(strings.ToUpper(st.State), "UNKNOWN"),
 			Description: st.Description, Commit: st.Commit.Hash, URL: st.URL,
 			CreatedOn: st.CreatedOn, UpdatedOn: st.UpdatedOn,
 		})
@@ -325,18 +299,10 @@ func CombineChecks(statuses []Status, pipelines []Pipeline) []Check {
 		if key == "" && p.BuildNumber != nil {
 			key = strconv.Itoa(*p.BuildNumber)
 		}
-		updated := p.CompletedOn
-		if updated == "" {
-			updated = p.CreatedOn
-		}
-		ref := p.Target.RefName
-		if ref == "" {
-			ref = p.Target.Branch.Name
-		}
 		out = append(out, Check{
 			Type: "pipeline", Key: key, Name: pipelineName(p), State: PipelineState(p),
-			Description: ref, Commit: p.Target.Commit.Hash, URL: url,
-			CreatedOn: p.CreatedOn, UpdatedOn: updated,
+			Description: cmp.Or(p.Target.RefName, p.Target.Branch.Name), Commit: p.Target.Commit.Hash, URL: url,
+			CreatedOn: p.CreatedOn, UpdatedOn: cmp.Or(p.CompletedOn, p.CreatedOn),
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -361,18 +327,12 @@ func pipelineName(p Pipeline) string {
 	if p.BuildNumber != nil {
 		number = fmt.Sprintf(" #%d", *p.BuildNumber)
 	}
-	if sel := p.Target.Selector.Pattern; sel != "" {
-		return sel + number
-	}
-	return "Pipeline" + number
+	return cmp.Or(p.Target.Selector.Pattern, "Pipeline") + number
 }
 
 // PipelineState flattens Bitbucket's nested state/result into one word.
 func PipelineState(p Pipeline) string {
-	name := strings.ToUpper(p.State.Name)
-	if name == "" {
-		name = "UNKNOWN"
-	}
+	name := cmp.Or(strings.ToUpper(p.State.Name), "UNKNOWN")
 	if name == "COMPLETED" && p.State.Result.Name != "" {
 		return strings.ToUpper(p.State.Result.Name)
 	}

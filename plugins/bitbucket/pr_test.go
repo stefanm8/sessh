@@ -81,50 +81,18 @@ func TestResolveStates(t *testing.T) {
 }
 
 func TestPipelineState(t *testing.T) {
-	tests := []struct {
-		name string
-		spec pipelineSpec
-		want string
-	}{
-		{
-			name: "a completed run reports its result, not COMPLETED",
-			spec: pipelineSpec{stateName: "COMPLETED", resultName: "SUCCESSFUL"},
-			want: "SUCCESSFUL",
-		},
-		{
-			name: "a completed failure reports FAILED",
-			spec: pipelineSpec{stateName: "COMPLETED", resultName: "FAILED"},
-			want: "FAILED",
-		},
-		{
-			name: "a running pipeline reports its state",
-			spec: pipelineSpec{stateName: "IN_PROGRESS"},
-			want: "IN_PROGRESS",
-		},
-		{
-			name: "a completed run with no result keeps COMPLETED",
-			spec: pipelineSpec{stateName: "COMPLETED"},
-			want: "COMPLETED",
-		},
-		{
-			name: "lower-case state and result are normalized",
-			spec: pipelineSpec{stateName: "completed", resultName: "successful"},
-			want: "SUCCESSFUL",
-		},
-		{
-			name: "a missing state is UNKNOWN rather than empty",
-			spec: pipelineSpec{},
-			want: "UNKNOWN",
-		},
-		{
-			name: "a result on a non-completed state is ignored",
-			spec: pipelineSpec{stateName: "PENDING", resultName: "SUCCESSFUL"},
-			want: "PENDING",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := PipelineState(tt.spec.build()); got != tt.want {
+	for _, tt := range []struct{ state, result, want string }{
+		{"COMPLETED", "SUCCESSFUL", "SUCCESSFUL"},
+		{"COMPLETED", "FAILED", "FAILED"},
+		{"IN_PROGRESS", "", "IN_PROGRESS"},
+		{"COMPLETED", "", "COMPLETED"},
+		{"completed", "successful", "SUCCESSFUL"},
+		{"", "", "UNKNOWN"},
+		{"PENDING", "SUCCESSFUL", "PENDING"},
+	} {
+		t.Run(tt.state+"/"+tt.result, func(t *testing.T) {
+			p := pipelineSpec{stateName: tt.state, resultName: tt.result}.build()
+			if got := PipelineState(p); got != tt.want {
 				t.Errorf("PipelineState() = %q, want %q", got, tt.want)
 			}
 		})
@@ -162,55 +130,36 @@ func TestCheckOutcome(t *testing.T) {
 	}
 }
 
-func TestCheckCounts(t *testing.T) {
-	tests := []struct {
-		name                string
-		states              []string
-		ok, pending, failed int
-	}{
-		{"no checks counts nothing", nil, 0, 0, 0},
-		{"all green", []string{"SUCCESSFUL", "SUCCESS"}, 2, 0, 0},
-		{"a mixed board", []string{"SUCCESSFUL", "IN_PROGRESS", "FAILED", "STOPPED"}, 1, 1, 2},
-		{"pending only", []string{"PENDING", "RUNNING"}, 0, 2, 0},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			checks := make([]Check, 0, len(tt.states))
-			for _, s := range tt.states {
-				checks = append(checks, Check{State: s})
-			}
-			ok, pending, failed := CheckCounts(checks)
-			if ok != tt.ok || pending != tt.pending || failed != tt.failed {
-				t.Errorf("CheckCounts(%v) = (%d, %d, %d), want (%d, %d, %d)",
-					tt.states, ok, pending, failed, tt.ok, tt.pending, tt.failed)
-			}
-		})
-	}
-}
-
-func TestChecksExitCode(t *testing.T) {
-	tests := []struct {
+func TestCheckCountsAndExitCode(t *testing.T) {
+	for _, tt := range []struct {
 		name   string
 		states []string
-		want   int
+		counts [3]int // successful, pending, failed
+		exit   int
 	}{
-		{"no checks reported is a failure, not a pass", nil, 1},
-		{"every check passed", []string{"SUCCESSFUL"}, 0},
-		{"several checks passed", []string{"SUCCESSFUL", "SUCCESS", "PASSED"}, 0},
-		{"still running is the dedicated pending code", []string{"IN_PROGRESS"}, 8},
-		{"a failure outranks a pending check", []string{"IN_PROGRESS", "FAILED"}, 1},
-		{"a failure outranks a success", []string{"SUCCESSFUL", "FAILED"}, 1},
-		{"a pending check outranks a success", []string{"SUCCESSFUL", "PENDING"}, 8},
-		{"an unknown state is treated as a failure", []string{"UNKNOWN"}, 1},
-	}
-	for _, tt := range tests {
+		{"no checks", nil, [3]int{}, 1},
+		{"all green", []string{"SUCCESSFUL", "SUCCESS"}, [3]int{2, 0, 0}, 0},
+		{"mixed", []string{"SUCCESSFUL", "IN_PROGRESS", "FAILED", "STOPPED"}, [3]int{1, 1, 2}, 1},
+		{"pending only", []string{"PENDING", "RUNNING"}, [3]int{0, 2, 0}, 8},
+		{"one pass", []string{"SUCCESSFUL"}, [3]int{1, 0, 0}, 0},
+		{"several passes", []string{"SUCCESSFUL", "SUCCESS", "PASSED"}, [3]int{3, 0, 0}, 0},
+		{"still running", []string{"IN_PROGRESS"}, [3]int{0, 1, 0}, 8},
+		{"failure outranks pending", []string{"IN_PROGRESS", "FAILED"}, [3]int{0, 1, 1}, 1},
+		{"failure outranks success", []string{"SUCCESSFUL", "FAILED"}, [3]int{1, 0, 1}, 1},
+		{"pending outranks success", []string{"SUCCESSFUL", "PENDING"}, [3]int{1, 1, 0}, 8},
+		{"unknown fails closed", []string{"UNKNOWN"}, [3]int{0, 0, 1}, 1},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			checks := make([]Check, 0, len(tt.states))
-			for _, s := range tt.states {
-				checks = append(checks, Check{State: s})
+			checks := make([]Check, len(tt.states))
+			for i, state := range tt.states {
+				checks[i].State = state
 			}
-			if got := ChecksExitCode(checks); got != tt.want {
-				t.Errorf("ChecksExitCode(%v) = %d, want %d", tt.states, got, tt.want)
+			ok, pending, failed := CheckCounts(checks)
+			if got := [3]int{ok, pending, failed}; got != tt.counts {
+				t.Errorf("CheckCounts(%v) = %v, want %v", tt.states, got, tt.counts)
+			}
+			if got := ChecksExitCode(checks); got != tt.exit {
+				t.Errorf("ChecksExitCode(%v) = %d, want %d", tt.states, got, tt.exit)
 			}
 		})
 	}
@@ -251,46 +200,24 @@ func TestCombineChecks(t *testing.T) {
 		}
 	})
 
-	t.Run("a pipeline that already published a commit status is suppressed", func(t *testing.T) {
-		got := CombineChecks(
-			// Bitbucket writes the status URL with a trailing slash, the pipeline
-			// link without one; they are the same run.
-			[]Status{status("", "Pipeline", "SUCCESSFUL", "https://ci.example/run/1/", "", "", "")},
-			[]Pipeline{pipelineSpec{
-				buildNumber: intPtr(1), stateName: "COMPLETED", resultName: "SUCCESSFUL",
-				href: "https://ci.example/run/1",
-			}.build()},
-		)
-		if len(got) != 1 {
-			t.Fatalf("CombineChecks() returned %d checks, want the duplicate dropped", len(got))
-		}
-		if got[0].Type != "status" {
-			t.Errorf("survivor is %q, want the commit status to win", got[0].Type)
-		}
-	})
-
-	t.Run("a pipeline with a different URL is kept", func(t *testing.T) {
-		got := CombineChecks(
-			[]Status{status("", "External", "SUCCESSFUL", "https://ci.example/run/1", "", "", "")},
-			[]Pipeline{pipelineSpec{
-				buildNumber: intPtr(2), stateName: "COMPLETED", resultName: "SUCCESSFUL",
-				href: "https://ci.example/run/2",
-			}.build()},
-		)
-		if len(got) != 2 {
-			t.Fatalf("CombineChecks() returned %d checks, want 2", len(got))
-		}
-	})
-
-	t.Run("URL-less runs are never deduped against each other", func(t *testing.T) {
-		got := CombineChecks(
-			[]Status{status("k", "", "SUCCESSFUL", "", "", "", "")},
-			[]Pipeline{pipelineSpec{buildNumber: intPtr(3), stateName: "IN_PROGRESS"}.build()},
-		)
-		if len(got) != 2 {
-			t.Fatalf("CombineChecks() returned %d checks, want both kept", len(got))
-		}
-	})
+	for _, tt := range []struct {
+		name, statusURL, pipelineURL string
+		count                        int
+	}{
+		{"published status suppresses pipeline", "https://ci.example/run/1/", "https://ci.example/run/1", 1},
+		{"different URLs are kept", "https://ci.example/run/1", "https://ci.example/run/2", 2},
+		{"URL-less runs are kept", "", "", 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CombineChecks(
+				[]Status{status("k", "Pipeline", "SUCCESSFUL", tt.statusURL, "", "", "")},
+				[]Pipeline{pipelineSpec{buildNumber: intPtr(1), stateName: "COMPLETED", resultName: "SUCCESSFUL", href: tt.pipelineURL}.build()},
+			)
+			if len(got) != tt.count || got[0].Type != "status" {
+				t.Fatalf("checks = %+v, want %d with status first", got, tt.count)
+			}
+		})
+	}
 
 	t.Run("newest first, by updated time then created time", func(t *testing.T) {
 		got := CombineChecks(
@@ -404,44 +331,23 @@ func TestCombineChecks(t *testing.T) {
 		}
 	})
 
-	t.Run("a pipeline key falls back from uuid to build number", func(t *testing.T) {
-		got := CombineChecks(nil, []Pipeline{pipelineSpec{buildNumber: intPtr(42)}.build()})
-		if got[0].Key != "42" {
-			t.Errorf("Key = %q, want %q", got[0].Key, "42")
-		}
-		got = CombineChecks(nil, []Pipeline{pipelineSpec{uuid: "{u}", buildNumber: intPtr(42)}.build()})
-		if got[0].Key != "{u}" {
-			t.Errorf("Key = %q, want the uuid", got[0].Key)
-		}
-	})
-
-	t.Run("a still-running pipeline is timestamped by created_on", func(t *testing.T) {
-		got := CombineChecks(nil, []Pipeline{pipelineSpec{
-			stateName: "IN_PROGRESS", createdOn: "2026-01-01T00:00:00Z",
-		}.build()})
-		if got[0].UpdatedOn != "2026-01-01T00:00:00Z" {
-			t.Errorf("UpdatedOn = %q, want the created_on fallback", got[0].UpdatedOn)
-		}
-	})
-
-	t.Run("a finished pipeline is timestamped by completed_on", func(t *testing.T) {
-		got := CombineChecks(nil, []Pipeline{pipelineSpec{
-			stateName: "COMPLETED", resultName: "SUCCESSFUL",
-			createdOn: "2026-01-01T00:00:00Z", completedOn: "2026-01-01T00:10:00Z",
-		}.build()})
-		if got[0].UpdatedOn != "2026-01-01T00:10:00Z" {
-			t.Errorf("UpdatedOn = %q, want the completed_on value", got[0].UpdatedOn)
-		}
-	})
-
-	t.Run("the pipeline description falls back from ref name to branch", func(t *testing.T) {
-		got := CombineChecks(nil, []Pipeline{pipelineSpec{refName: "release/1.2"}.build()})
-		if got[0].Description != "release/1.2" {
-			t.Errorf("Description = %q, want the ref name", got[0].Description)
-		}
-		got = CombineChecks(nil, []Pipeline{pipelineSpec{branch: "main"}.build()})
-		if got[0].Description != "main" {
-			t.Errorf("Description = %q, want the branch name", got[0].Description)
-		}
-	})
+	for _, tt := range []struct {
+		name                      string
+		spec                      pipelineSpec
+		key, updated, description string
+	}{
+		{name: "key uses build number", spec: pipelineSpec{buildNumber: intPtr(42)}, key: "42"},
+		{name: "uuid wins", spec: pipelineSpec{uuid: "{u}", buildNumber: intPtr(42)}, key: "{u}"},
+		{name: "running uses creation time", spec: pipelineSpec{stateName: "IN_PROGRESS", createdOn: "2026-01-01T00:00:00Z"}, updated: "2026-01-01T00:00:00Z"},
+		{name: "finished uses completion time", spec: pipelineSpec{stateName: "COMPLETED", resultName: "SUCCESSFUL", createdOn: "2026-01-01T00:00:00Z", completedOn: "2026-01-01T00:10:00Z"}, updated: "2026-01-01T00:10:00Z"},
+		{name: "description uses ref", spec: pipelineSpec{refName: "release/1.2"}, description: "release/1.2"},
+		{name: "description falls back to branch", spec: pipelineSpec{branch: "main"}, description: "main"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CombineChecks(nil, []Pipeline{tt.spec.build()})[0]
+			if got.Key != tt.key || got.UpdatedOn != tt.updated || got.Description != tt.description {
+				t.Errorf("check = %+v, want key=%q updated=%q description=%q", got, tt.key, tt.updated, tt.description)
+			}
+		})
+	}
 }
